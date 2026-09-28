@@ -118,6 +118,82 @@ def test_blender():
         assert os.path.getsize(pad) > 0
 
 
+def test_tegelplan():
+    pixel, b, h, tegels = lx.plan_luchtfoto(0, 0, 100, 50, 0.02, 10000, max_tegel=2000)
+    assert (b, h) == (5000, 2500)
+    assert len(tegels) == 3 * 2
+    assert sum(t[2] * t[3] for t in tegels) == b * h, "tegels horen het hele beeld precies te bedekken"
+    ongeveer(max(t[4][2] for t in tegels), 100.0)
+    ongeveer(max(t[4][3] for t in tegels), 50.0)
+    # Te groot gebied: pixelgrootte wordt grover zodat de foto binnen max_pixels past.
+    pixel, b, h, _ = lx.plan_luchtfoto(0, 0, 5000, 1000, 0.25, 4096)
+    assert b <= 4096 and ongeveer(pixel, 5000 / 4096) is None
+
+
+def _nep_pdok(url):
+    """Geeft een effen tegel terug met de linkeronderhoek (RD) in de kleur verwerkt."""
+    from urllib.parse import parse_qs, urlparse
+
+    q = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
+    x0, y0, _, _ = (float(w) for w in q["BBOX"].split(","))
+    b, h = int(q["WIDTH"]), int(q["HEIGHT"])
+    beeld = bpy.data.images.new("nep", b, h)
+    rood = 1.0 if x0 >= 155000 else 0.0  # rechterhelft rood
+    groen = 1.0 if y0 >= 463000 else 0.0  # bovenhelft groen
+    beeld.pixels.foreach_set([rood, groen, 0.0, 1.0] * (b * h))
+    with tempfile.TemporaryDirectory() as tmp:
+        pad = os.path.join(tmp, "nep.png")
+        beeld.filepath_raw = pad
+        beeld.file_format = "PNG"
+        beeld.save()
+        bpy.data.images.remove(beeld)
+        with open(pad, "rb") as f:
+            return f.read()
+
+
+def test_luchtfoto_draperen():
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    lx.bouw_scene(lx.lees_landxml(VOORBEELD), bpy.context, "voorbeeld")
+    maaiveld = bpy.data.objects["Maaiveld"]
+
+    oud = lx.PDOK_MAX_TEGEL
+    lx.PDOK_MAX_TEGEL = 50  # veel kleine tegels, om het aan elkaar plakken te testen
+    try:
+        beeld, pixel = lx.drapeer_luchtfoto([maaiveld], pixel=1.0, marge=0.0, download=_nep_pdok)
+    finally:
+        lx.PDOK_MAX_TEGEL = oud
+
+    assert beeld.packed_file is not None, "foto hoort in het .blend-bestand te zitten"
+    assert tuple(beeld.size) == (100, 100)  # 100 m bij 1 m per pixel
+    import numpy as np
+    px = np.empty(100 * 100 * 4, dtype=np.float32)
+    beeld.pixels.foreach_get(px)
+    px = px.reshape(100, 100, 4)
+    # Pixelrij 0 is de onderkant (zuiden) in Blender.
+    assert px[10, 10, 0] < 0.5 and px[10, 10, 1] < 0.5, "linksonder: zuidwest"
+    assert px[10, 90, 0] > 0.5 and px[10, 90, 1] < 0.5, "rechtsonder: zuidoost"
+    assert px[90, 10, 0] < 0.5 and px[90, 10, 1] > 0.5, "linksboven: noordwest"
+
+    mat = maaiveld.data.materials[0]
+    assert mat.name.startswith("Luchtfoto")
+    uv = maaiveld.data.uv_layers["Luchtfoto"]
+    for lus in maaiveld.data.loops:
+        co = maaiveld.data.vertices[lus.vertex_index].co
+        u, v = uv.data[lus.index].uv
+        ongeveer(u, (co.x + 50) / 100)
+        ongeveer(v, (co.y + 50) / 100)
+
+
+def test_luchtfoto_pdok_echt():
+    """Echte download van één kleine tegel; wordt overgeslagen zonder internet."""
+    try:
+        inhoud = lx._download(lx.luchtfoto_url("Actueel_ortho25", 155000, 463000, 155050, 463050, 200, 200))
+    except OSError as fout:
+        print("   overgeslagen (geen verbinding met PDOK):", fout)
+        return
+    assert inhoud[:2] == b"\xff\xd8", "PDOK hoort een JPEG terug te geven"
+
+
 if __name__ == "__main__":
     for naam, functie in list(globals().items()):
         if naam.startswith("test_"):

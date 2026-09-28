@@ -8,6 +8,9 @@ zet het om naar Blender-objecten:
 - Alignments + profiel  -> 3D-lijn over het lengteprofiel
 - Feature lines         -> 3D-lijn
 
+Daarnaast legt "Object > Luchtfoto draperen (PDOK)" de luchtfoto van PDOK op de
+geselecteerde surfaces, op de juiste RD-coördinaten.
+
 Grote coördinaten (RD, bijvoorbeeld X=155000, Y=463000) worden naar een lokaal
 nulpunt verschoven, omdat Blender daar anders onnauwkeurig mee rekent. Het
 nulpunt staat in de scène (object "RD-nulpunt") en wordt bij volgende imports
@@ -21,10 +24,11 @@ Gebruik vanaf de opdrachtregel:
 bl_info = {
     "name": "LandXML-import (Civil 3D)",
     "author": "Speeltuin",
-    "version": (1, 0, 0),
+    "version": (1, 1, 0),
     "blender": (3, 6, 0),
-    "location": "File > Import > LandXML (.xml)",
-    "description": "Importeert surfaces, pipe networks, alignments en feature lines uit LandXML",
+    "location": "File > Import > LandXML (.xml); Object > Luchtfoto draperen (PDOK)",
+    "description": "Importeert surfaces, pipe networks, alignments en feature lines uit LandXML "
+                   "en legt de PDOK-luchtfoto op surfaces",
     "category": "Import-Export",
 }
 
@@ -34,7 +38,7 @@ import xml.etree.ElementTree as ET
 
 import bpy
 import bmesh  # na bpy: bij de losse bpy-module bestaat bmesh pas daarna
-from bpy.props import FloatProperty, StringProperty
+from bpy.props import EnumProperty, FloatProperty, IntProperty, StringProperty
 from bpy_extras.io_utils import ImportHelper
 
 NULPUNT_NAAM = "RD-nulpunt"
@@ -549,6 +553,161 @@ def bouw_scene(data, context, naam="LandXML", nulpunt=None):
 
 
 # ---------------------------------------------------------------------------
+# Luchtfoto van PDOK draperen
+# ---------------------------------------------------------------------------
+
+PDOK_WMS = "https://service.pdok.nl/hwh/luchtfotorgb/wms/v1_0"
+PDOK_LAGEN = [
+    ("Actueel_ortho25", "Actueel, 25 cm", "Meest recente luchtfoto met pixels van 25 cm"),
+    ("Actueel_orthoHR", "Actueel, 8 cm", "Meest recente luchtfoto in hoge resolutie (pixels van ongeveer 8 cm)"),
+]
+PDOK_MAX_TEGEL = 2000  # PDOK levert maximaal 2500 pixels per verzoek
+
+
+def luchtfoto_url(laag, x0, y0, x1, y1, breedte, hoogte):
+    """WMS-verzoek in RD (EPSG:28992); bij WMS 1.3.0 is de volgorde voor RD x,y."""
+    return (
+        f"{PDOK_WMS}?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS={laag}&STYLES="
+        f"&CRS=EPSG:28992&BBOX={x0:.3f},{y0:.3f},{x1:.3f},{y1:.3f}"
+        f"&WIDTH={breedte}&HEIGHT={hoogte}&FORMAT=image/jpeg"
+    )
+
+
+def plan_luchtfoto(x0, y0, x1, y1, pixel, max_pixels, max_tegel=PDOK_MAX_TEGEL):
+    """Verdeelt het gebied in tegels. Geeft (pixelgrootte, breedte, hoogte, tegels) terug.
+
+    Elke tegel is (px, py, breedte, hoogte, (x0, y0, x1, y1)), met py geteld vanaf de
+    onderkant, zoals Blender de pixels van een afbeelding opslaat.
+    """
+    pixel = max(pixel, (x1 - x0) / max_pixels, (y1 - y0) / max_pixels)
+    breedte = max(1, math.ceil((x1 - x0) / pixel))
+    hoogte = max(1, math.ceil((y1 - y0) / pixel))
+    tegels = []
+    for py in range(0, hoogte, max_tegel):
+        for px in range(0, breedte, max_tegel):
+            b, h = min(max_tegel, breedte - px), min(max_tegel, hoogte - py)
+            vak = (x0 + px * pixel, y0 + py * pixel, x0 + (px + b) * pixel, y0 + (py + h) * pixel)
+            tegels.append((px, py, b, h, vak))
+    return pixel, breedte, hoogte, tegels
+
+
+def _download(url):
+    import urllib.request
+
+    with urllib.request.urlopen(url, timeout=120) as antwoord:
+        soort = antwoord.headers.get("Content-Type", "")
+        inhoud = antwoord.read()
+    if not soort.startswith("image/"):
+        raise RuntimeError("PDOK gaf geen afbeelding terug: " + inhoud[:300].decode("utf-8", "replace"))
+    return inhoud
+
+
+def haal_luchtfoto(laag, x0, y0, x1, y1, pixel, max_pixels, map_, download=_download):
+    """Haalt de luchtfoto op in tegels, plakt ze aan elkaar en slaat het resultaat op als JPEG."""
+    import os
+    import numpy as np
+
+    pixel, breedte, hoogte, tegels = plan_luchtfoto(x0, y0, x1, y1, pixel, max_pixels, PDOK_MAX_TEGEL)
+    geheel = np.zeros((hoogte, breedte, 4), dtype=np.float32)
+    tijdelijk = os.path.join(map_, "_pdok_tegel.jpg")
+    for px, py, b, h, vak in tegels:
+        with open(tijdelijk, "wb") as f:
+            f.write(download(luchtfoto_url(laag, *vak, b, h)))
+        tegel = bpy.data.images.load(tijdelijk)
+        pixels = np.empty(b * h * 4, dtype=np.float32)
+        tegel.pixels.foreach_get(pixels)
+        geheel[py:py + h, px:px + b] = pixels.reshape(h, b, 4)
+        bpy.data.images.remove(tegel)
+    os.remove(tijdelijk)
+
+    naam = f"luchtfoto_{laag}_{x0:.0f}_{y0:.0f}.jpg"
+    beeld = bpy.data.images.new(naam, breedte, hoogte, alpha=False)
+    beeld.pixels.foreach_set(geheel.ravel())
+    beeld.filepath_raw = os.path.join(map_, naam)
+    beeld.file_format = "JPEG"
+    beeld.save()
+    beeld.pack()  # zit daarna in het .blend-bestand, ook als het los bestand verdwijnt
+    return beeld, pixel
+
+
+def _wereld_punten(obj):
+    import numpy as np
+
+    punten = np.empty(len(obj.data.vertices) * 3, dtype=np.float64)
+    obj.data.vertices.foreach_get("co", punten)
+    punten = punten.reshape(-1, 3)
+    m = np.array(obj.matrix_world, dtype=np.float64)
+    return punten @ m[:3, :3].T + m[:3, 3]
+
+
+def zet_uv_bovenaanzicht(obj, x0, y0, x1, y1, naam="Luchtfoto"):
+    """UV-map waarbij elke vertex de plek van zijn lokale x,y op de luchtfoto krijgt."""
+    import numpy as np
+
+    mesh = obj.data
+    uv = mesh.uv_layers.get(naam) or mesh.uv_layers.new(name=naam)
+    punten = _wereld_punten(obj)
+    index = np.empty(len(mesh.loops), dtype=np.int64)
+    mesh.loops.foreach_get("vertex_index", index)
+    u = (punten[index, 0] - x0) / (x1 - x0)
+    v = (punten[index, 1] - y0) / (y1 - y0)
+    uv.data.foreach_set("uv", np.column_stack([u, v]).astype(np.float32).ravel())
+    return uv
+
+
+def luchtfoto_materiaal(beeld, uv_naam="Luchtfoto"):
+    mat = bpy.data.materials.new("Luchtfoto")
+    mat.diffuse_color = (0.35, 0.40, 0.30, 1.0)
+    if not mat.use_nodes:
+        mat.use_nodes = True
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    bsdf = nodes.get("Principled BSDF")
+    bsdf.inputs["Roughness"].default_value = 1.0
+    tex = nodes.new("ShaderNodeTexImage")
+    tex.image = beeld
+    tex.extension = "EXTEND"
+    tex.location = (-400, 300)
+    uvnode = nodes.new("ShaderNodeUVMap")
+    uvnode.uv_map = uv_naam
+    uvnode.location = (-650, 300)
+    links.new(uvnode.outputs["UV"], tex.inputs["Vector"])
+    links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+    return mat
+
+
+def drapeer_luchtfoto(objecten, laag="Actueel_ortho25", pixel=0.25, max_pixels=4096, marge=10.0,
+                      download=_download):
+    """Legt de PDOK-luchtfoto op de meegegeven mesh-objecten. Geeft (beeld, pixelgrootte) terug."""
+    import os
+    import tempfile
+
+    nulpunt = haal_nulpunt(bpy.context.scene)
+    if nulpunt is None:
+        raise RuntimeError("Geen RD-nulpunt in de scène; importeer eerst een LandXML-bestand")
+    ox, oy = nulpunt
+
+    xs, ys = [], []
+    for obj in objecten:
+        p = _wereld_punten(obj)
+        xs += [p[:, 0].min(), p[:, 0].max()]
+        ys += [p[:, 1].min(), p[:, 1].max()]
+    x0, y0 = min(xs) - marge, min(ys) - marge
+    x1, y1 = max(xs) + marge, max(ys) + marge
+
+    map_ = os.path.dirname(bpy.data.filepath) if bpy.data.filepath else tempfile.gettempdir()
+    beeld, pixel = haal_luchtfoto(laag, x0 + ox, y0 + oy, x1 + ox, y1 + oy, pixel, max_pixels, map_, download)
+
+    # De foto kan door afronding op hele pixels iets groter zijn dan gevraagd.
+    x1, y1 = x0 + beeld.size[0] * pixel, y0 + beeld.size[1] * pixel
+    mat = luchtfoto_materiaal(beeld)
+    for obj in objecten:
+        zet_uv_bovenaanzicht(obj, x0, y0, x1, y1)
+        obj.data.materials.clear()
+        obj.data.materials.append(mat)
+    return beeld, pixel
+
+
+# ---------------------------------------------------------------------------
 # Add-on
 # ---------------------------------------------------------------------------
 
@@ -585,6 +744,45 @@ class IMPORT_OT_landxml(bpy.types.Operator, ImportHelper):
         return {"FINISHED"}
 
 
+class OBJECT_OT_luchtfoto_pdok(bpy.types.Operator):
+    """Leg de luchtfoto van PDOK op de geselecteerde surfaces, op de juiste RD-coördinaten"""
+
+    bl_idname = "object.luchtfoto_pdok"
+    bl_label = "Luchtfoto draperen (PDOK)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    laag: EnumProperty(name="Luchtfoto", items=PDOK_LAGEN, default="Actueel_ortho25")
+    pixel: FloatProperty(
+        name="Pixelgrootte (m)",
+        description="Gewenste scherpte; bij een groot gebied wordt dit automatisch grover",
+        default=0.25, min=0.05, max=10.0,
+    )
+    max_pixels: IntProperty(
+        name="Maximale afmeting (px)",
+        description="Grootste breedte of hoogte van de foto; groter kost veel geheugen",
+        default=4096, min=512, max=16384,
+    )
+    marge: FloatProperty(name="Marge (m)", description="Extra rand rondom de surfaces", default=10.0, min=0.0)
+
+    @classmethod
+    def poll(cls, context):
+        return any(o.type == "MESH" for o in context.selected_objects)
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        objecten = [o for o in context.selected_objects if o.type == "MESH"]
+        try:
+            beeld, pixel = drapeer_luchtfoto(objecten, self.laag, self.pixel, self.max_pixels, self.marge)
+        except Exception as fout:  # netwerk- of PDOK-fout: laat de melding zien in plaats van te crashen
+            self.report({"ERROR"}, f"Luchtfoto ophalen mislukt: {fout}")
+            return {"CANCELLED"}
+        b, h = beeld.size
+        self.report({"INFO"}, f"Luchtfoto op {len(objecten)} object(en) gelegd: {b}x{h} px, {pixel:.2f} m per pixel")
+        return {"FINISHED"}
+
+
 def _samenvatting(ox, oy, telling):
     delen = ", ".join(f"{v} {k}" for k, v in telling.items() if v)
     return f"LandXML geïmporteerd ({delen or 'niets gevonden'}); nulpunt X={ox:.0f} Y={oy:.0f}"
@@ -594,13 +792,22 @@ def _menu(self, context):
     self.layout.operator(IMPORT_OT_landxml.bl_idname, text="LandXML (.xml)")
 
 
+def _menu_object(self, context):
+    self.layout.separator()
+    self.layout.operator(OBJECT_OT_luchtfoto_pdok.bl_idname, icon="IMAGE_DATA")
+
+
 def register():
     bpy.utils.register_class(IMPORT_OT_landxml)
+    bpy.utils.register_class(OBJECT_OT_luchtfoto_pdok)
     bpy.types.TOPBAR_MT_file_import.append(_menu)
+    bpy.types.VIEW3D_MT_object.append(_menu_object)
 
 
 def unregister():
+    bpy.types.VIEW3D_MT_object.remove(_menu_object)
     bpy.types.TOPBAR_MT_file_import.remove(_menu)
+    bpy.utils.unregister_class(OBJECT_OT_luchtfoto_pdok)
     bpy.utils.unregister_class(IMPORT_OT_landxml)
 
 

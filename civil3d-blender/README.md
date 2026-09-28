@@ -1,6 +1,6 @@
 # Civil 3D naar Blender (LandXML-import)
 
-Een gratis Blender-add-on die de **LandXML-export van Civil 3D** inleest. Je hebt geen FBX- of IFC-export nodig: LandXML zit in elke Civil 3D.
+Een gratis Blender-add-on die de **LandXML-export van Civil 3D** inleest en er desgewenst de PDOK-luchtfoto op legt. Je hebt geen FBX- of IFC-export nodig: LandXML zit in elke Civil 3D.
 
 ![Voorbeeld: maaiveld, as met boog, riolering en band](voorbeeld/voorbeeld.png)
 
@@ -44,6 +44,26 @@ Blender rekent onnauwkeurig met grote getallen zoals RD-coördinaten (X=155000, 
 - Wil je zelf een nulpunt kiezen, vul dan *Nulpunt X* en *Nulpunt Y* in het importvenster in.
 
 Een punt in Blender terugrekenen naar RD: `RD-X = Blender-X + rd_x`, `RD-Y = Blender-Y + rd_y`.
+
+## 4. Luchtfoto op een surface leggen
+
+De add-on kan de luchtfoto van PDOK (gratis, heel Nederland) op een surface leggen, precies op de RD-coördinaten.
+
+1. Selecteer in het grote beeld de surface(s), bijvoorbeeld het bestaande maaiveld. Houd **Shift** ingedrukt om er meer te selecteren.
+2. Kies in het menu **Object → Luchtfoto draperen (PDOK)**.
+3. Kies de luchtfoto (*Actueel, 25 cm* of de scherpere *Actueel, 8 cm*) en klik **OK**.
+4. Zet de weergave op **Material Preview** (toets **Z**) om de foto te zien.
+
+Goed om te weten:
+
+- De luchtfoto's zijn open data van Beeldmateriaal Nederland (via PDOK). Vermeld die bron als je een plaatje deelt.
+- Je hebt internet nodig. De foto wordt in het `.blend`-bestand opgeslagen, dus daarna kun je ook offline verder.
+- De geselecteerde surfaces krijgen het materiaal *Luchtfoto*. Hun eigen materiaal vervalt.
+- Een luchtfoto laat de **huidige** situatie zien. Leg hem dus op het bestaande maaiveld, niet op een ontwerpsurface.
+- Bij een groot gebied wordt de foto automatisch grover, zodat hij niet groter wordt dan *Maximale afmeting* (standaard 4096 pixels). Wil je meer detail, selecteer dan een kleiner gebied of zet die waarde hoger. Dat kost wel meer geheugen.
+- Een nieuwe versie van de add-on installeer je op dezelfde manier als de eerste keer (*Install from Disk*). Herstart Blender daarna.
+
+![Luchtfoto op het voorbeeldmaaiveld](voorbeeld/luchtfoto.png)
 
 ## Opdrachtregel
 
