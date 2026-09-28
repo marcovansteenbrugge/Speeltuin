@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Verzonnen voorbeeld in het formaat van een Civil 3D LandXML-export. Geen echte locatie. -->
+<LandXML xmlns="http://www.landxml.org/schema/LandXML-1.2" version="1.2" date="2026-09-28" time="12:00:00">
+  <Units>
+    <Metric areaUnit="squareMeter" linearUnit="meter" volumeUnit="cubicMeter" temperatureUnit="celsius" pressureUnit="HPA" diameterUnit="millimeter" angularUnit="decimal degrees" directionUnit="decimal degrees"/>
+  </Units>
+  <Surfaces>
+    <Surface name="Maaiveld">
+      <Definition surfType="TIN">
+        <Pnts>
+          <P id="1">462950.000 154950.000 1.200</P>
+          <P id="2">462950.000 154970.000 1.400</P>
+          <P id="3">462950.000 154990.000 1.600</P>
+          <P id="4">462950.000 155010.000 1.800</P>
+          <P id="5">462950.000 155030.000 2.000</P>
+          <P id="6">462950.000 155050.000 2.200</P>
+          <P id="7">462970.000 154950.000 1.452</P>
+          <P id="8">462970.000 154970.000 1.652</P>
+          <P id="9">462970.000 154990.000 1.852</P>
+          <P id="10">462970.000 155010.000 2.052</P>
+          <P id="11">462970.000 155030.000 2.252</P>
+          <P id="12">462970.000 155050.000 2.452</P>
+          <P id="13">462990.000 154950.000 1.473</P>
+          <P id="14">462990.000 154970.000 1.673</P>
+          <P id="15">462990.000 154990.000 1.873</P>
+          <P id="16">462990.000 155010.000 2.073</P>
+          <P id="17">462990.000 155030.000 2.273</P>
+          <P id="18">462990.000 155050.000 2.473</P>
+          <P id="19">463010.000 154950.000 1.242</P>
+          <P id="20">463010.000 154970.000 1.442</P>
+          <P id="21">463010.000 154990.000 1.642</P>
+          <P id="22">463010.000 155010.000 1.842</P>
+          <P id="23">463010.000 155030.000 2.042</P>
+          <P id="24">463010.000 155050.000 2.242</P>
+          <P id="25">463030.000 154950.000 0.973</P>
+          <P id="26">463030.000 154970.000 1.173</P>
+          <P id="27">463030.000 154990.000 1.373</P>
+          <P id="28">463030.000 155010.000 1.573</P>
+          <P id="29">463030.000 155030.000 1.773</P>
+          <P id="30">463030.000 155050.000 1.973</P>
+          <P id="31">463050.000 154950.000 0.912</P>
+          <P id="32">463050.000 154970.000 1.112</P>
+          <P id="33">463050.000 154990.000 1.312</P>
+          <P id="34">463050.000 155010.000 1.512</P>
+          <P id="35">463050.000 155030.000 1.712</P>
+          <P id="36">463050.000 155050.000 1.912</P>
+        </Pnts>
+        <Faces>
+          <F>1 2 8</F>
+          <F>1 8 7</F>
+          <F>2 3 9</F>
+          <F>2 9 8</F>
+          <F>3 4 10</F>
+          <F>3 10 9</F>
+          <F>4 5 11</F>
+          <F>4 11 10</F>
+          <F>5 6 12</F>
+          <F>5 12 11</F>
+          <F>7 8 14</F>
+          <F>7 14 13</F>
+          <F>8 9 15</F>
+          <F>8 15 14</F>
+          <F>9 10 16</F>
+          <F>9 16 15</F>
+          <F>10 11 17</F>
+          <F>10 17 16</F>
+          <F>11 12 18</F>
+          <F>11 18 17</F>
+          <F>13 14 20</F>
+          <F>13 20 19</F>
+          <F>14 15 21</F>
+          <F>14 21 20</F>
+          <F>15 16 22</F>
+          <F>15 22 21</F>
+          <F>16 17 23</F>
+          <F>16 23 22</F>
+          <F>17 18 24</F>
+          <F>17 24 23</F>
+          <F>19 20 26</F>
+          <F>19 26 25</F>
+          <F>20 21 27</F>
+          <F>20 27 26</F>
+          <F>21 22 28</F>
+          <F>21 28 27</F>
+          <F>22 23 29</F>
+          <F>22 29 28</F>
+          <F>23 24 30</F>
+          <F>23 30 29</F>
+          <F>25 26 32</F>
+          <F>25 32 31</F>
+          <F>26 27 33</F>
+          <F>26 33 32</F>
+          <F>27 28 34</F>
+          <F>27 34 33</F>
+          <F>28 29 35</F>
+          <F>28 35 34</F>
+          <F i="1">29 30 36</F>
+          <F i="1">29 36 35</F>
+        </Faces>
+      </Definition>
+    </Surface>
+  </Surfaces>
+  <Alignments>
+    <Alignment name="As Hoofdstraat" length="0" staStart="0">
+      <CoordGeom>
+        <Line>
+          <Start>462960.000 154960.000</Start>
+          <End>462960.000 155000.000</End>
+        </Line>
+        <Curve rot="ccw" radius="20">
+          <Start>462960.000 155000.000</Start>
+          <Center>462980.000 155000.000</Center>
+          <End>462980.000 155020.000</End>
+        </Curve>
+        <Spiral rot="ccw" length="15" radiusStart="INF" radiusEnd="INF" spiType="clothoid">
+          <Start>462980.000 155020.000</Start>
+          <PI>462990.000 155020.000</PI>
+          <End>462998.000 155022.000</End>
+        </Spiral>
+        <Line>
+          <Start>462998.000 155022.000</Start>
+          <End>463040.000 155030.000</End>
+        </Line>
+      </CoordGeom>
+      <Profile name="As Hoofdstraat">
+        <ProfAlign name="Ontwerp">
+          <PVI>0 1.500</PVI>
+          <ParaCurve length="20">50 2.500</ParaCurve>
+          <PVI>130 2.100</PVI>
+        </ProfAlign>
+      </Profile>
+    </Alignment>
+  </Alignments>
+  <PlanFeatures name="Feature lines">
+    <PlanFeature name="Band links">
+      <CoordGeom>
+        <Line>
+          <Start>462955.000 154960.000 1.650</Start>
+          <End>462955.000 155000.000 1.850</End>
+        </Line>
+      </CoordGeom>
+    </PlanFeature>
+  </PlanFeatures>
+  <PipeNetworks>
+    <PipeNetwork name="HWA riool" pipeNetType="storm">
+      <Structs>
+        <Struct name="Put 1" elevRim="1.600" elevSump="-0.300">
+          <Center>462970.000 154970.000</Center>
+          <CircStruct diameter="1000" thickness="100"/>
+          <Invert elev="-0.200" flowDir="out" refPipe="Leiding 1"/>
+        </Struct>
+        <Struct name="Put 2" elevRim="1.900" elevSump="-0.600">
+          <Center>462970.000 155020.000</Center>
+          <RectStruct length="1200" width="800" thickness="100"/>
+          <Invert elev="-0.450" flowDir="in" refPipe="Leiding 1"/>
+        </Struct>
+      </Structs>
+      <Pipes>
+        <Pipe name="Leiding 1" refStart="Put 1" refEnd="Put 2" length="50" slope="-0.005">
+          <CircPipe diameter="400" thickness="40"/>
+        </Pipe>
+      </Pipes>
+    </PipeNetwork>
+  </PipeNetworks>
+</LandXML>
