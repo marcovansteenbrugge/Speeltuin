@@ -118,6 +118,60 @@ def test_blender():
         assert os.path.getsize(pad) > 0
 
 
+def test_kleur_op_naam():
+    # Namen zoals ze uit een echt Civil 3D-dijkontwerp komen.
+    verwacht = {
+        "SURF_-_Prototype_-_Ontgraven_buitenzijde": "ontgraving",
+        "SURF_-_Prototype_-_Ontgraving_Binnenzijde": "ontgraving",
+        "SURF_-_Prototype_Kruin_-_Binnentalud_Beheerstrook": "beheerstrook",
+        "SURF_-_Prototype_Kruin_-_Binnentalud_Berm": "gras",
+        "SURF_-_Prototype_Kruin_-_Binnentalud_Onderbeloop": "gras",
+        "SURF_-_Prototype_Kruin_-_Binnentalud_Teelaarde": "gras",
+        "SURF_-_Prototype_Kruin_-_Bovenbeloop_Teelaarde": "gras",
+        "SURF_-_Prototype_Kruin_-_Buitentalud_Zetsteen": "steen",
+        "SURF_-_Prototype_Kruin_-_Kruin_Asfalt": "asfalt",
+        "SURF_-_Prototype_Kruin_-_Kruin_Bermverharding": "bermverharding",
+        "Maaiveld": "maaiveld",
+        "EG": "maaiveld",
+        "Weg_links": "asfalt",
+        "Wegberm": "gras",  # korte woorden zoals "weg" tellen alleen als los woord
+        "Legger": None,  # "eg" midden in een woord telt niet
+        "Dijkvak 02": None,
+    }
+    for naam, sleutel in verwacht.items():
+        uit = lx.oppervlak_voor_naam(naam)
+        assert (uit[0] if uit else None) == sleutel, f"{naam}: {uit}"
+
+
+def test_kleuren_in_blender():
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    namen = ["Buitentalud_Zetsteen", "Binnentalud_Teelaarde", "Buitentalud_Berm", "Dijkvak 02", "Onbekend"]
+    objecten = []
+    for naam in namen:
+        mesh = bpy.data.meshes.new(naam)
+        mesh.from_pydata([(0, 0, 0), (1, 0, 0), (0, 1, 0)], [], [(0, 1, 2)])
+        obj = bpy.data.objects.new(naam, mesh)
+        bpy.context.scene.collection.objects.link(obj)
+        objecten.append(obj)
+    foto = bpy.data.objects.new("Met foto", bpy.data.meshes.new("Met foto"))
+    foto.data.materials.append(bpy.data.materials.new("Luchtfoto"))
+    objecten.append(foto)
+
+    assert lx.kleur_surfaces(objecten) == (5, 1)
+    mat = {o.name: o.data.materials[0].name for o in objecten}
+    assert mat["Buitentalud_Zetsteen"] == "Oppervlak steen"
+    assert mat["Binnentalud_Teelaarde"] == mat["Buitentalud_Berm"] == "Oppervlak gras"
+    assert mat["Dijkvak 02"] != mat["Onbekend"], "onbekende namen horen verschillende kleuren te krijgen"
+    assert mat["Met foto"] == "Luchtfoto", "luchtfoto hoort te blijven staan"
+
+    # Opnieuw toepassen maakt geen dubbele materialen en houdt eigen aanpassingen.
+    gras = bpy.data.materials["Oppervlak gras"]
+    gras.diffuse_color = (1, 0, 0, 1)
+    lx.kleur_surfaces(objecten)
+    assert objecten[1].data.materials[0] == gras and tuple(gras.diffuse_color)[:3] == (1, 0, 0)
+    assert "Oppervlak gras.001" not in bpy.data.materials
+
+
 def test_tegelplan():
     pixel, b, h, tegels = lx.plan_luchtfoto(0, 0, 100, 50, 0.02, 10000, max_tegel=2000)
     assert (b, h) == (5000, 2500)

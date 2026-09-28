@@ -8,7 +8,9 @@ zet het om naar Blender-objecten:
 - Alignments + profiel  -> 3D-lijn over het lengteprofiel
 - Feature lines         -> 3D-lijn
 
-Daarnaast legt "Object > Luchtfoto draperen (PDOK)" de luchtfoto van PDOK op de
+Surfaces krijgen een materiaal op basis van hun naam (gras, asfalt, zetsteen, ...);
+opnieuw toepassen kan met "Object > Materialen op naam (surfaces)".
+"Object > Luchtfoto draperen (PDOK)" legt de luchtfoto van PDOK op de
 geselecteerde surfaces, op de juiste RD-coördinaten.
 
 Grote coördinaten (RD, bijvoorbeeld X=155000, Y=463000) worden naar een lokaal
@@ -24,7 +26,7 @@ Gebruik vanaf de opdrachtregel:
 bl_info = {
     "name": "LandXML-import (Civil 3D)",
     "author": "Speeltuin",
-    "version": (1, 1, 0),
+    "version": (1, 2, 0),
     "blender": (3, 6, 0),
     "location": "File > Import > LandXML (.xml); Object > Luchtfoto draperen (PDOK)",
     "description": "Importeert surfaces, pipe networks, alignments en feature lines uit LandXML "
@@ -38,7 +40,7 @@ import xml.etree.ElementTree as ET
 
 import bpy
 import bmesh  # na bpy: bij de losse bpy-module bestaat bmesh pas daarna
-from bpy.props import EnumProperty, FloatProperty, IntProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
 from bpy_extras.io_utils import ImportHelper
 
 NULPUNT_NAAM = "RD-nulpunt"
@@ -64,6 +66,41 @@ KLEUREN = {
     "alignment": (0.85, 0.15, 0.15, 1.0),
     "featureline": (0.90, 0.75, 0.10, 1.0),
 }
+
+# Kleur van een surface op basis van een woord in de naam. De volgorde telt: het
+# eerste woord dat past wint, dus specifieke woorden (bermverharding, zetsteen)
+# staan vóór algemene (berm, talud). Kleuren zijn lineair, zoals Blender ze rekent.
+OPPERVLAKKEN = [
+    ("ontgraving", ("ontgrav",), (0.20, 0.13, 0.07), 0.95),
+    ("bermverharding", ("bermverharding", "grasbeton", "grastegel"), (0.16, 0.19, 0.11), 0.9),
+    ("beheerstrook", ("beheerstrook",), (0.16, 0.28, 0.07), 0.95),
+    ("fietspad", ("fietspad",), (0.30, 0.05, 0.035), 0.85),
+    ("asfalt", ("asfalt", "rijbaan", "weg"), (0.045, 0.045, 0.05), 0.85),
+    ("steen", ("zetsteen", "breuksteen", "stortsteen", "steen", "bekleding"), (0.17, 0.17, 0.18), 0.75),
+    ("beton", ("beton",), (0.42, 0.42, 0.40), 0.8),
+    ("klinker", ("klinker", "bestrating"), (0.28, 0.09, 0.05), 0.85),
+    ("klei", ("klei",), (0.24, 0.16, 0.09), 0.95),
+    ("zand", ("zand",), (0.52, 0.42, 0.25), 0.95),
+    ("water", ("water", "sloot", "watergang"), (0.02, 0.07, 0.10), 0.1),
+    ("gras", ("teelaarde", "gras", "berm", "talud", "beloop", "kruin"), (0.09, 0.20, 0.04), 0.95),
+    ("maaiveld", ("maaiveld", "bestaand", "terrein", "eg"), (0.12, 0.18, 0.07), 0.95),
+]
+# Voor namen zonder bekend woord: rustige kleuren die onderling goed te onderscheiden zijn.
+OPPERVLAK_REST = [
+    (0.45, 0.30, 0.15), (0.20, 0.30, 0.45), (0.40, 0.40, 0.20), (0.35, 0.20, 0.35), (0.25, 0.40, 0.35),
+]
+
+
+def oppervlak_voor_naam(naam):
+    """Geeft (sleutel, kleur, roughness) terug voor een surfacenaam."""
+    woorden = naam.lower().replace("-", "_").replace(" ", "_")
+    delen = set(woorden.split("_"))
+    for sleutel, sleutelwoorden, kleur, ruwheid in OPPERVLAKKEN:
+        for w in sleutelwoorden:
+            # Korte woorden (zoals "eg") alleen als los woord, anders passen ze te vaak.
+            if (w in delen) if len(w) <= 3 else (w in woorden):
+                return sleutel, kleur, ruwheid
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +446,183 @@ def _materiaal(sleutel):
     return mat
 
 
+# Materialen per soort oppervlak. "ruis": natuurlijk oppervlak met vlekken van
+# ongeveer `vlek` meter en fijne structuur; "blokken": steenzetting of tegels met
+# afmetingen in meters. Alles op echte schaal, omdat de surfaces in meters staan.
+TEXTUREN = {
+    "gras": {"type": "ruis", "c1": (0.05, 0.13, 0.02), "c2": (0.10, 0.20, 0.035),
+             "donker": (0.03, 0.07, 0.015), "vlek": 25, "fijn": 4.0, "bump": 0.15},
+    "beheerstrook": {"type": "ruis", "c1": (0.11, 0.20, 0.045), "c2": (0.17, 0.25, 0.06),
+                     "donker": (0.08, 0.13, 0.03), "vlek": 15, "fijn": 6.0, "bump": 0.1},
+    "maaiveld": {"type": "ruis", "c1": (0.06, 0.12, 0.03), "c2": (0.12, 0.18, 0.045),
+                 "donker": (0.04, 0.08, 0.02), "vlek": 40, "fijn": 4.0, "bump": 0.15},
+    "ontgraving": {"type": "ruis", "c1": (0.17, 0.10, 0.05), "c2": (0.26, 0.17, 0.09),
+                   "donker": (0.09, 0.05, 0.03), "vlek": 8, "fijn": 5.0, "bump": 0.3},
+    "klei": {"type": "ruis", "c1": (0.21, 0.14, 0.08), "c2": (0.28, 0.20, 0.12),
+             "donker": (0.13, 0.09, 0.05), "vlek": 10, "fijn": 6.0, "bump": 0.2},
+    "zand": {"type": "ruis", "c1": (0.46, 0.36, 0.21), "c2": (0.58, 0.48, 0.30),
+             "donker": (0.36, 0.28, 0.17), "vlek": 10, "fijn": 20.0, "bump": 0.05},
+    "asfalt": {"type": "ruis", "c1": (0.035, 0.035, 0.04), "c2": (0.06, 0.06, 0.065),
+               "donker": (0.02, 0.02, 0.022), "vlek": 12, "fijn": 60.0, "bump": 0.05},
+    "fietspad": {"type": "ruis", "c1": (0.24, 0.04, 0.03), "c2": (0.33, 0.06, 0.04),
+                 "donker": (0.15, 0.03, 0.02), "vlek": 12, "fijn": 60.0, "bump": 0.05},
+    "beton": {"type": "ruis", "c1": (0.35, 0.35, 0.33), "c2": (0.45, 0.45, 0.43),
+              "donker": (0.25, 0.25, 0.24), "vlek": 6, "fijn": 30.0, "bump": 0.05},
+    "water": {"type": "ruis", "c1": (0.015, 0.05, 0.07), "c2": (0.025, 0.07, 0.09),
+              "donker": (0.01, 0.03, 0.05), "vlek": 30, "fijn": 1.5, "bump": 0.2},
+    "steen": {"type": "blokken", "c1": (0.05, 0.05, 0.055), "c2": (0.11, 0.11, 0.115),
+              "voeg": (0.015, 0.015, 0.015), "donker": (0.035, 0.045, 0.025),
+              "breedte": 0.4, "hoogte": 0.35, "voegmaat": 0.025, "bump": 0.5},
+    "bermverharding": {"type": "blokken", "c1": (0.30, 0.30, 0.28), "c2": (0.36, 0.36, 0.33),
+                       "voeg": (0.08, 0.18, 0.04), "donker": (0.18, 0.20, 0.15),
+                       "breedte": 0.6, "hoogte": 0.4, "voegmaat": 0.10, "bump": 0.3},
+    "klinker": {"type": "blokken", "c1": (0.25, 0.08, 0.04), "c2": (0.32, 0.12, 0.06),
+                "voeg": (0.20, 0.20, 0.18), "donker": (0.15, 0.06, 0.03),
+                "breedte": 0.21, "hoogte": 0.105, "voegmaat": 0.006, "bump": 0.3},
+}
+
+
+def _socket(node, naam, soort=None, uitgang=False):
+    """Zoekt een socket op naam; bij de Mix-node bestaan dezelfde namen voor meerdere typen."""
+    lijst = [s for s in (node.outputs if uitgang else node.inputs)
+             if s.name == naam and (soort is None or s.type == soort)]
+    actief = [s for s in lijst if s.enabled]
+    return (actief or lijst)[0]
+
+
+def _verbind(links, doel, bron):
+    """Koppelt een socket, of zet een vaste waarde als de bron geen socket is."""
+    if isinstance(bron, bpy.types.NodeSocket):
+        links.new(bron, doel)
+    elif isinstance(bron, tuple) and len(bron) == 3:
+        doel.default_value = (*bron, 1.0)
+    else:
+        doel.default_value = bron
+
+
+def _mix_kleur(nodes, links, factor, a, b, x, y):
+    mix = nodes.new("ShaderNodeMix")
+    mix.data_type = "RGBA"
+    mix.location = (x, y)
+    _verbind(links, _socket(mix, "Factor", "VALUE"), factor)
+    _verbind(links, _socket(mix, "A", "RGBA"), a)
+    _verbind(links, _socket(mix, "B", "RGBA"), b)
+    return _socket(mix, "Result", "RGBA", uitgang=True)
+
+
+def _ruis(nodes, links, vector, schaal, detail, x, y):
+    ruis = nodes.new("ShaderNodeTexNoise")
+    ruis.location = (x, y)
+    links.new(vector, ruis.inputs["Vector"])
+    ruis.inputs["Scale"].default_value = schaal
+    ruis.inputs["Detail"].default_value = detail
+    return ruis.outputs["Fac"]
+
+
+def _vlekken(nodes, links, fac, van, tot, x, y):
+    """Maakt van ruis losse vlekken: onder `van` niets, boven `tot` volledig."""
+    ramp = nodes.new("ShaderNodeValToRGB")
+    ramp.location = (x, y)
+    ramp.color_ramp.elements[0].position = van
+    ramp.color_ramp.elements[1].position = tot
+    links.new(fac, ramp.inputs["Fac"])
+    return ramp.outputs["Color"]
+
+
+def bouw_textuur(mat, spec, ruwheid):
+    """Bouwt het node-netwerk voor een materiaal volgens een spec uit TEXTUREN."""
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    bsdf = nodes.get("Principled BSDF")
+    bsdf.inputs["Roughness"].default_value = ruwheid
+    coord = nodes.new("ShaderNodeTexCoord")
+    coord.location = (-1400, 0)
+    vector = coord.outputs["Object"]  # in meters, en doorlopend over alle surfaces
+
+    fijn = _ruis(nodes, links, vector, spec.get("fijn", 3.0), 8.0, -1150, -300)
+    if spec["type"] == "blokken":
+        steen = nodes.new("ShaderNodeTexBrick")
+        steen.location = (-900, 200)
+        links.new(vector, steen.inputs["Vector"])
+        for naam, waarde in (("Color1", spec["c1"]), ("Color2", spec["c2"]), ("Mortar", spec["voeg"])):
+            steen.inputs[naam].default_value = (*waarde, 1.0)
+        steen.inputs["Scale"].default_value = 1.0
+        steen.inputs["Mortar Size"].default_value = spec["voegmaat"]
+        steen.inputs["Brick Width"].default_value = spec["breedte"]
+        steen.inputs["Row Height"].default_value = spec["hoogte"]
+        kleur, hoogte, omkeren = steen.outputs["Color"], steen.outputs["Fac"], True
+    else:
+        groot = _ruis(nodes, links, vector, 1.0 / spec["vlek"], 3.0, -1150, 200)
+        kleur = _mix_kleur(nodes, links, groot, spec["c1"], spec["c2"], -700, 200)
+        hoogte, omkeren = fijn, False
+
+    # Verwering of plukken donkerder gras, zodat het niet egaal oogt.
+    vlek = _vlekken(nodes, links, fijn, 0.5, 0.8, -700, -200)
+    kleur = _mix_kleur(nodes, links, vlek, kleur, spec["donker"], -450, 100)
+    links.new(kleur, bsdf.inputs["Base Color"])
+
+    bump = nodes.new("ShaderNodeBump")
+    bump.location = (-450, -300)
+    bump.invert = omkeren  # bij blokken ligt de voeg lager dan de steen
+    bump.inputs["Strength"].default_value = spec["bump"]
+    links.new(hoogte, bump.inputs["Height"])
+    links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+
+
+def oppervlak_materiaal(naam, rest_index=0, textuur=True):
+    """Gedeeld materiaal per soort oppervlak, bijvoorbeeld "Oppervlak gras".
+
+    Met textuur=True krijgt het materiaal een patroon (gras, steenzetting, asfalt),
+    anders een effen kleur ("Kleur gras"). Bestaat het materiaal al, dan wordt het
+    hergebruikt, zodat zelf aangepaste instellingen bewaard blijven en alle
+    surfaces van dezelfde soort mee veranderen.
+    """
+    soort = oppervlak_voor_naam(naam)
+    if soort is None:
+        nummer = rest_index % len(OPPERVLAK_REST)
+        sleutel, kleur, ruwheid = f"overig {nummer + 1}", OPPERVLAK_REST[nummer], 0.9
+    else:
+        sleutel, kleur, ruwheid = soort
+    spec = TEXTUREN.get(sleutel) if textuur else None
+    matnaam = ("Oppervlak " if spec else "Kleur ") + sleutel
+    mat = bpy.data.materials.get(matnaam)
+    if mat is None:
+        mat = bpy.data.materials.new(matnaam)
+        if spec:
+            kleur = tuple((a + b) / 2 for a, b in zip(spec["c1"], spec["c2"]))
+        mat.diffuse_color = (*kleur, 1.0)  # ook in de grijze weergave (Solid) de goede kleur
+        mat.roughness = ruwheid
+        if not mat.use_nodes:
+            mat.use_nodes = True
+        bsdf = mat.node_tree.nodes.get("Principled BSDF")
+        if spec:
+            bouw_textuur(mat, spec, ruwheid)
+        elif bsdf is not None:
+            bsdf.inputs["Base Color"].default_value = (*kleur, 1.0)
+            bsdf.inputs["Roughness"].default_value = ruwheid
+    return mat, soort is not None
+
+
+def kleur_surfaces(objecten, textuur=True):
+    """Geeft elke surface een materiaal op basis van zijn naam.
+
+    Objecten met een luchtfoto worden overgeslagen. Geeft (gekleurd, overgeslagen) terug.
+    """
+    gekleurd, overgeslagen, rest = 0, 0, 0
+    for obj in sorted(objecten, key=lambda o: o.name):
+        if obj.type != "MESH":
+            continue
+        if any(m is not None and m.name.startswith("Luchtfoto") for m in obj.data.materials):
+            overgeslagen += 1
+            continue
+        mat, herkend = oppervlak_materiaal(obj.name, rest, textuur)
+        if not herkend:
+            rest += 1
+        obj.data.materials.clear()
+        obj.data.materials.append(mat)
+        gekleurd += 1
+    return gekleurd, overgeslagen
+
+
 def _collectie(naam, ouder):
     col = bpy.data.collections.new(naam)
     ouder.children.link(col)
@@ -447,7 +661,7 @@ def _mesh_surface(s, ox, oy, col):
     mesh.from_pydata(punten, [], s["vlakken"])
     mesh.validate()
     mesh.update()
-    return _object(s["naam"], mesh, col, _materiaal("maaiveld"))
+    return _object(s["naam"], mesh, col)
 
 
 def _mesh_put(put, ox, oy, col):
@@ -512,10 +726,9 @@ def bouw_scene(data, context, naam="LandXML", nulpunt=None):
 
     if data["surfaces"]:
         col = _collectie("Surfaces", hoofd)
-        for s in data["surfaces"]:
-            if s["vlakken"]:
-                _mesh_surface(s, ox, oy, col)
-                telling["surfaces"] += 1
+        surfaces = [_mesh_surface(s, ox, oy, col) for s in data["surfaces"] if s["vlakken"]]
+        kleur_surfaces(surfaces)
+        telling["surfaces"] = len(surfaces)
 
     for net in data["netwerken"]:
         col = _collectie(net["naam"], hoofd)
@@ -783,6 +996,32 @@ class OBJECT_OT_luchtfoto_pdok(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class OBJECT_OT_kleuren_op_naam(bpy.types.Operator):
+    """Geef de geselecteerde surfaces een materiaal op basis van hun naam (gras, asfalt, zetsteen, ...)"""
+
+    bl_idname = "object.kleuren_op_naam"
+    bl_label = "Materialen op naam (surfaces)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    textuur: BoolProperty(
+        name="Met textuur",
+        description="Gras, steenzetting en asfalt met patroon; uit = effen kleuren",
+        default=True,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return any(o.type == "MESH" for o in context.selected_objects)
+
+    def execute(self, context):
+        gekleurd, overgeslagen = kleur_surfaces(context.selected_objects, self.textuur)
+        melding = f"{gekleurd} surface(s) een materiaal gegeven"
+        if overgeslagen:
+            melding += f"; {overgeslagen} met luchtfoto overgeslagen"
+        self.report({"INFO"}, melding)
+        return {"FINISHED"}
+
+
 def _samenvatting(ox, oy, telling):
     delen = ", ".join(f"{v} {k}" for k, v in telling.items() if v)
     return f"LandXML geïmporteerd ({delen or 'niets gevonden'}); nulpunt X={ox:.0f} Y={oy:.0f}"
@@ -794,12 +1033,14 @@ def _menu(self, context):
 
 def _menu_object(self, context):
     self.layout.separator()
+    self.layout.operator(OBJECT_OT_kleuren_op_naam.bl_idname, icon="COLOR")
     self.layout.operator(OBJECT_OT_luchtfoto_pdok.bl_idname, icon="IMAGE_DATA")
 
 
 def register():
     bpy.utils.register_class(IMPORT_OT_landxml)
     bpy.utils.register_class(OBJECT_OT_luchtfoto_pdok)
+    bpy.utils.register_class(OBJECT_OT_kleuren_op_naam)
     bpy.types.TOPBAR_MT_file_import.append(_menu)
     bpy.types.VIEW3D_MT_object.append(_menu_object)
 
@@ -807,6 +1048,7 @@ def register():
 def unregister():
     bpy.types.VIEW3D_MT_object.remove(_menu_object)
     bpy.types.TOPBAR_MT_file_import.remove(_menu)
+    bpy.utils.unregister_class(OBJECT_OT_kleuren_op_naam)
     bpy.utils.unregister_class(OBJECT_OT_luchtfoto_pdok)
     bpy.utils.unregister_class(IMPORT_OT_landxml)
 

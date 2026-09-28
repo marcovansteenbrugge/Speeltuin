@@ -8,7 +8,7 @@ Een gratis Blender-add-on die de **LandXML-export van Civil 3D** inleest en er d
 
 | Civil 3D | In Blender |
 | --- | --- |
-| Surface (TIN) | Mesh, met gaten en randen zoals in Civil 3D |
+| Surface (TIN) | Mesh, met gaten en randen zoals in Civil 3D, en een materiaal op basis van de naam |
 | Pipe network | Putten (rond of rechthoekig, van bodem tot deksel) en leidingen op de juiste BOB |
 | Alignment + ontwerpprofiel | 3D-lijn over het lengteprofiel, inclusief verticale bogen |
 | Feature line | 3D-lijn |
@@ -45,7 +45,34 @@ Blender rekent onnauwkeurig met grote getallen zoals RD-coördinaten (X=155000, 
 
 Een punt in Blender terugrekenen naar RD: `RD-X = Blender-X + rd_x`, `RD-Y = Blender-Y + rd_y`.
 
-## 4. Luchtfoto op een surface leggen
+## 4. Materialen op naam
+
+Bij het importeren krijgt elke surface automatisch een materiaal op basis van zijn naam:
+
+| Woord in de naam | Materiaal |
+| --- | --- |
+| Teelaarde, Gras, Berm, Talud, Beloop, Kruin | Gras |
+| Beheerstrook | Gemaaid gras (lichter) |
+| Zetsteen, Breuksteen, Stortsteen, Steen, Bekleding | Steenzetting (blokken van ca. 40 × 35 cm) |
+| Asfalt, Rijbaan, Weg | Asfalt |
+| Bermverharding, Grasbeton, Grastegel | Grasbetontegels |
+| Fietspad | Rood asfalt |
+| Klinker, Bestrating | Klinkers (waalformaat) |
+| Beton | Beton |
+| Ontgrav(en/ing), Klei, Zand | Grond, klei, zand |
+| Water, Sloot, Watergang | Water |
+| Maaiveld, Bestaand, Terrein, EG | Bestaand maaiveld |
+
+Het eerste woord dat past wint: *Kruin_Bermverharding* wordt grasbetontegels, niet gras. Surfaces zonder bekend woord krijgen elk een eigen effen kleur.
+
+![Materialen op een testdijk met de laagnamen uit een Civil 3D-dijkontwerp](voorbeeld/materialen.png)
+
+- Alle surfaces van dezelfde soort delen één materiaal, bijvoorbeeld *Oppervlak gras*. Pas je dat aan, dan verandert al het gras mee.
+- **Opnieuw toepassen** (bijvoorbeeld op een bestand dat met een oudere versie is geïmporteerd): selecteer de surfaces (toets **A** in het grote beeld selecteert alles) en kies **Object → Materialen op naam (surfaces)**. Surfaces met een luchtfoto worden overgeslagen.
+- Liever effen kleuren? Na het uitvoeren klapt linksonder in het grote beeld een venstertje open. Zet daar **Met textuur** uit.
+- De patronen zie je in **Material Preview** (toets **Z**) en in de render, niet in de grijze weergave.
+
+## 5. Luchtfoto op een surface leggen
 
 De add-on kan de luchtfoto van PDOK (gratis, heel Nederland) op een surface leggen, precies op de RD-coördinaten.
 
@@ -58,7 +85,7 @@ Goed om te weten:
 
 - De luchtfoto's zijn open data van Beeldmateriaal Nederland (via PDOK). Vermeld die bron als je een plaatje deelt.
 - Je hebt internet nodig. De foto wordt in het `.blend`-bestand opgeslagen, dus daarna kun je ook offline verder.
-- De geselecteerde surfaces krijgen het materiaal *Luchtfoto*. Hun eigen materiaal vervalt.
+- **Alle geselecteerde** surfaces krijgen het materiaal *Luchtfoto*; hun eigen materiaal vervalt. Selecteer dus alleen het maaiveld. Gaat het toch mis, dan zet **Object → Materialen op naam** de andere surfaces weer terug.
 - Een luchtfoto laat de **huidige** situatie zien. Leg hem dus op het bestaande maaiveld, niet op een ontwerpsurface.
 - Bij een groot gebied wordt de foto automatisch grover, zodat hij niet groter wordt dan *Maximale afmeting* (standaard 4096 pixels). Wil je meer detail, selecteer dan een kleiner gebied of zet die waarde hoger. Dat kost wel meer geheugen.
 - Een nieuwe versie van de add-on installeer je op dezelfde manier als de eerste keer (*Install from Disk*). Herstart Blender daarna.
