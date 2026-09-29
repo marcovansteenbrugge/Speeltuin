@@ -248,6 +248,216 @@ def test_luchtfoto_pdok_echt():
     assert inhoud[:2] == b"\xff\xd8", "PDOK hoort een JPEG terug te geven"
 
 
+def maak_tiff(a, nodata=None, rijen_per_strook=16):
+    """Schrijft een float32-TIFF zoals PDOK: deflate met 'floating point predictor', in stroken."""
+    import struct
+    import zlib
+    import numpy as np
+
+    h, w = a.shape
+    stroken = []
+    for y in range(0, h, rijen_per_strook):
+        rijen = []
+        for rij in a[y:y + rijen_per_strook].astype(">f4"):
+            b = rij.view(np.uint8).reshape(w, 4).T.ravel()  # byte-vlakken, meest significant eerst
+            rijen.append(np.diff(b, prepend=np.uint8(0)).astype(np.uint8).tobytes())
+        stroken.append(zlib.compress(b"".join(rijen)))
+    tags = [(256, 3, [w]), (257, 3, [h]), (258, 3, [32]), (259, 3, [8]), (262, 3, [1]),
+            (273, 4, None), (277, 3, [1]), (278, 3, [rijen_per_strook]),
+            (279, 4, [len(s) for s in stroken]), (317, 3, [3]), (339, 3, [3])]
+    if nodata is not None:
+        tags.append((42113, 2, str(nodata).encode() + b"\0"))
+    codes = {3: "H", 4: "I"}
+    kop = 8
+    ifd_lengte = 2 + 12 * len(tags) + 4
+    extra, extra_plek = b"", kop + ifd_lengte
+    waarden = {}
+    # Eerst plaats voor lange waarden reserveren; daarna komen de stroken.
+    for tag, soort, w_ in tags:
+        if tag == 273:
+            continue
+        ruw = w_ if soort == 2 else struct.pack("<" + codes[soort] * len(w_), *w_)
+        if len(ruw) > 4:
+            waarden[tag] = ("plek", extra_plek + len(extra))
+            extra += ruw
+        else:
+            waarden[tag] = ("direct", ruw.ljust(4, b"\0"))
+    offsets_plek = extra_plek + len(extra)
+    extra += b"\0" * 4 * len(stroken)
+    data_plek = extra_plek + len(extra)
+    offsets = []
+    for s in stroken:
+        offsets.append(data_plek)
+        data_plek += len(s)
+    extra = extra[:offsets_plek - extra_plek] + struct.pack("<" + "I" * len(offsets), *offsets)
+    waarden[273] = ("plek", offsets_plek) if len(offsets) > 1 else ("direct", struct.pack("<I", offsets[0]))
+    ifd = struct.pack("<H", len(tags))
+    for tag, soort, w_ in tags:
+        aantal = len(w_) if tag != 273 else len(stroken)
+        wijze, waarde = waarden[tag]
+        ifd += struct.pack("<HHI", tag, soort, aantal) + (struct.pack("<I", waarde) if wijze == "plek" else waarde)
+    ifd += b"\0\0\0\0"
+    return b"II*\0" + struct.pack("<I", kop) + ifd + extra + b"".join(stroken)
+
+
+def test_tiff_lezen():
+    import numpy as np
+
+    rng = np.random.default_rng(1)
+    a = (rng.normal(5, 3, (37, 23))).astype(np.float32)
+    a[3, 4] = -9999
+    uit = lx.lees_tiff_float(maak_tiff(a, nodata=-9999, rijen_per_strook=10))
+    assert np.isnan(uit[3, 4])
+    a[3, 4] = np.nan
+    assert np.array_equal(np.isnan(uit), np.isnan(a))
+    assert np.allclose(uit[~np.isnan(a)], a[~np.isnan(a)], atol=0), "waarden horen exact gelijk te zijn"
+
+
+def _hoogtekaart(x0, y0, x1, y1, soort):
+    """Verzonnen AHN: maaiveld 1 m, bomen van 12 en 18 m, en een 'gebouw' zonder maaiveldwaarde."""
+    import numpy as np
+
+    p = lx.AHN_PIXEL
+    xs = np.arange(x0 + p / 2, x1, p)
+    ys = np.arange(y1 - p / 2, y0, -p)
+    X, Y = np.meshgrid(xs, ys)
+    dtm = np.full(X.shape, 1.0)
+    gebouw = (np.abs(X - 155030) < 5) & (np.abs(Y - 463030) < 5)
+    if soort == "dtm_05m":
+        dtm[gebouw] = np.nan
+        return dtm
+    dsm = dtm.copy()
+    for bx, by, h, r in ((154980, 462980, 12.0, 4.0), (155020, 462990, 18.0, 5.0)):
+        dsm = np.maximum(dsm, 1.0 + h * np.clip(1 - ((X - bx) ** 2 + (Y - by) ** 2) / (r * r), 0, None) ** 0.3)
+    dsm[gebouw] = 9.0
+    return dsm
+
+
+def _nep_ahn(url, verwacht=None):
+    import re
+
+    dekking = re.search(r"CoverageId=(\w+)", url).group(1)
+    x0, x1 = map(float, re.search(r"subset=x\(([^,]+),([^)]+)\)", url).groups())
+    y0, y1 = map(float, re.search(r"subset=y\(([^,]+),([^)]+)\)", url).groups())
+    return maak_tiff(_hoogtekaart(x0, y0, x1, y1, dekking), nodata=-9999)
+
+
+def test_bomen_vinden():
+    dsm, gx0, gy1 = lx.haal_ahn("dsm_05m", 154950, 462950, 155050, 463050, _nep_ahn)
+    dtm, _, _ = lx.haal_ahn("dtm_05m", 154950, 462950, 155050, 463050, _nep_ahn)
+    bomen = lx.vind_bomen(dsm, dtm)
+    assert len(bomen) == 2, bomen  # het 'gebouw' telt niet: daar heeft het maaiveld geen waarde
+    gevonden = sorted((gx0 + (k + 0.5) * 0.5, gy1 - (r + 0.5) * 0.5, h, s) for r, k, h, s in bomen)
+    (x1, y1, h1, s1), (x2, y2, h2, s2) = gevonden
+    assert abs(x1 - 154980) <= 0.5 and abs(y1 - 462980) <= 0.5 and abs(h1 - 12) < 0.5
+    assert abs(x2 - 155020) <= 0.5 and abs(y2 - 462990) <= 0.5 and abs(h2 - 18) < 0.5
+    assert 2.0 <= s1 <= 5.0 and 3.0 <= s2 <= 6.0, (s1, s2)
+
+
+def test_ahn_tegels():
+    """Een gebied over meer tegels heen hoort naadloos aan elkaar te sluiten."""
+    import numpy as np
+
+    oud = lx.AHN_TEGEL
+    lx.AHN_TEGEL = 30.0
+    try:
+        a, gx0, gy1 = lx.haal_ahn("dsm_05m", 154950.2, 462950.3, 155049.9, 463049.6, _nep_ahn)
+    finally:
+        lx.AHN_TEGEL = oud
+    heel = _hoogtekaart(154950, 462950, 155050, 463050, "dsm_05m")
+    assert (gx0, gy1) == (154950.0, 463050.0) and a.shape == heel.shape
+    assert np.allclose(a, heel.astype(np.float32))
+
+
+def _pand(nummer, x, y, dak_hoogte):
+    """Eén pand als CityJSON-feature: een doos met een plat dak (in millimeters, zoals de 3D BAG)."""
+    v = [(x, y, 0), (x + 5000, y, 0), (x + 5000, y + 4000, 0), (x, y + 4000, 0)]
+    v += [(a, b, dak_hoogte) for a, b, _ in v]
+    vlakken = [[[0, 3, 2, 1]], [[4, 5, 6, 7]], [[0, 1, 5, 4]], [[1, 2, 6, 5]], [[2, 3, 7, 6]], [[3, 0, 4, 7]]]
+    return {
+        "type": "CityJSONFeature", "id": f"NL.IMBAG.Pand.{nummer}", "vertices": v,
+        "CityObjects": {
+            f"NL.IMBAG.Pand.{nummer}": {"type": "Building", "geometry": []},
+            f"NL.IMBAG.Pand.{nummer}-0": {"type": "BuildingPart", "geometry": [{
+                "type": "Solid", "lod": "2.2", "boundaries": [vlakken],
+                "semantics": {"surfaces": [{"type": "GroundSurface"}, {"type": "RoofSurface"},
+                                           {"type": "WallSurface"}],
+                              "values": [[0, 1, 2, 2, 2, 2]]},
+            }]},
+        },
+    }
+
+
+def _nep_3dbag(url, verwacht=None):
+    import json
+
+    tweede = "offset" in url
+    pagina = {
+        "type": "FeatureCollection",
+        "metadata": {"transform": {"scale": [0.001, 0.001, 0.001], "translate": [155000.0, 463000.0, 0.0]}},
+        "features": [_pand(2 if tweede else 1, 10000 if tweede else 0, 0, 6000)],
+        "links": [] if tweede else [{"rel": "next", "href": url + "&offset=100"}],
+    }
+    return json.dumps(pagina).encode()
+
+
+def test_3dbag_omzetten():
+    paginas = lx.haal_3dbag(154900, 462900, 155100, 463100, _nep_3dbag)
+    assert len(paginas) == 2, "de volgende pagina hoort opgehaald te worden"
+    punten, vlakken, soorten, aantal = lx.gebouwen_uit_3dbag(paginas, "2.2", 155000, 463000)
+    assert aantal == 2
+    assert soorten.count(1) == 2 and soorten.count(2) == 8, "per pand 1 plat dak en 4 gevels, geen grondvlak"
+    dak = [punten[i] for i in vlakken[soorten.index(1)]]
+    assert all(abs(z - 6.0) < 1e-6 for _, _, z in dak)
+    assert min(p[0] for p in dak) == 0.0 and max(p[0] for p in dak) == 5.0
+    assert lx.gebouwen_uit_3dbag(paginas, "1.2")[3] == 0, "LoD 1.2 zit niet in dit nepbestand"
+
+
+def test_gebouwen_en_bomen_in_blender():
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    lx.zet_nulpunt(bpy.context.scene, 155000, 463000)
+    sc = bpy.context.scene
+    # Maaiveld van 100 x 100 m op 1 m NAP, en een 'ontwerp' dat de oostelijke helft bedekt.
+    for naam, x0, x1, z in (("Maaiveld", -50, 50, 1.0), ("Ontwerp", 0, 50, 2.0)):
+        me = bpy.data.meshes.new(naam)
+        me.from_pydata([(x0, -50, z), (x1, -50, z), (x1, 50, z), (x0, 50, z)], [], [(0, 1, 2, 3)])
+        sc.collection.objects.link(bpy.data.objects.new(naam, me))
+    maaiveld = bpy.data.objects["Maaiveld"]
+
+    obj, geplaatst, gevonden = lx.plaats_bomen([maaiveld], download=_nep_ahn)
+    assert gevonden == 2 and geplaatst == 1, "de boom onder het ontwerp hoort weggelaten te worden"
+    zs = [v.co.z for v in obj.data.vertices]
+    ongeveer(min(zs), 1.0, 0.01)  # stam staat op het maaiveld
+    ongeveer(max(zs), 13.0, 1.0)  # 12 m boom op 1 m NAP
+    assert obj.data.materials[0].name == "Boom kruin"
+
+    obj, _, _ = lx.plaats_bomen([maaiveld], alleen_op_selectie=False, download=_nep_ahn)
+    assert len(obj.data.vertices) > 0 and obj.name == "Bomen (AHN).001"
+
+    obj, aantal = lx.plaats_gebouwen([maaiveld], download=_nep_3dbag)
+    assert aantal == 2 and len(obj.data.polygons) == 10
+    assert [m.name for m in obj.data.materials] == ["Gebouw dak", "Gebouw plat dak", "Gebouw gevel"]
+
+
+def test_pdok_en_3dbag_echt():
+    """Echte AHN- en 3D BAG-gegevens rond het RD-nulpunt in Amersfoort; overgeslagen zonder internet."""
+    import numpy as np
+
+    try:
+        dsm, _, _ = lx.haal_ahn("dsm_05m", 155000, 463000, 155060, 463040)
+        dtm, _, _ = lx.haal_ahn("dtm_05m", 155000, 463000, 155060, 463040)
+        paginas = lx.haal_3dbag(155000, 463000, 155060, 463040)
+    except OSError as fout:
+        print("   overgeslagen (geen verbinding):", fout)
+        return
+    assert dsm.shape == (80, 120)
+    assert np.nanmin(dsm) > -10 and np.nanmax(dsm) < 150, "hoogtes horen in NAP-meters te staan"
+    verschil = dsm - dtm
+    assert np.nanmedian(verschil) >= -0.2, "DSM hoort op of boven het maaiveld te liggen"
+    punten, vlakken, soorten, aantal = lx.gebouwen_uit_3dbag(paginas, "2.2", 155000, 463000)
+    assert aantal > 0 and (0 in soorten or 1 in soorten)
+
+
 if __name__ == "__main__":
     for naam, functie in list(globals().items()):
         if naam.startswith("test_"):

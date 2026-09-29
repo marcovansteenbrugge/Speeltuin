@@ -11,7 +11,9 @@ zet het om naar Blender-objecten:
 Surfaces krijgen een materiaal op basis van hun naam (gras, asfalt, zetsteen, ...);
 opnieuw toepassen kan met "Object > Materialen op naam (surfaces)".
 "Object > Luchtfoto draperen (PDOK)" legt de luchtfoto van PDOK op de
-geselecteerde surfaces, op de juiste RD-coördinaten.
+geselecteerde surfaces, op de juiste RD-coördinaten. "Object > Gebouwen laden
+(3D BAG)" en "Object > Bomen plaatsen (AHN)" zetten de bestaande gebouwen en
+bomen rond de selectie neer.
 
 Grote coördinaten (RD, bijvoorbeeld X=155000, Y=463000) worden naar een lokaal
 nulpunt verschoven, omdat Blender daar anders onnauwkeurig mee rekent. Het
@@ -26,11 +28,11 @@ Gebruik vanaf de opdrachtregel:
 bl_info = {
     "name": "LandXML-import (Civil 3D)",
     "author": "Speeltuin",
-    "version": (1, 2, 0),
+    "version": (1, 3, 0),
     "blender": (3, 6, 0),
-    "location": "File > Import > LandXML (.xml); Object > Luchtfoto draperen (PDOK)",
-    "description": "Importeert surfaces, pipe networks, alignments en feature lines uit LandXML "
-                   "en legt de PDOK-luchtfoto op surfaces",
+    "location": "File > Import > LandXML (.xml); Object-menu",
+    "description": "Importeert surfaces, pipe networks, alignments en feature lines uit LandXML, "
+                   "met luchtfoto, gebouwen (3D BAG) en bomen (AHN)",
     "category": "Import-Export",
 }
 
@@ -804,14 +806,16 @@ def plan_luchtfoto(x0, y0, x1, y1, pixel, max_pixels, max_tegel=PDOK_MAX_TEGEL):
     return pixel, breedte, hoogte, tegels
 
 
-def _download(url):
+def _download(url, verwacht="image/"):
+    """Haalt een URL op en controleert het soort antwoord (een foutmelding is vaak XML of tekst)."""
     import urllib.request
 
-    with urllib.request.urlopen(url, timeout=120) as antwoord:
+    verzoek = urllib.request.Request(url, headers={"User-Agent": "LandXML-import voor Blender"})
+    with urllib.request.urlopen(verzoek, timeout=180) as antwoord:
         soort = antwoord.headers.get("Content-Type", "")
         inhoud = antwoord.read()
-    if not soort.startswith("image/"):
-        raise RuntimeError("PDOK gaf geen afbeelding terug: " + inhoud[:300].decode("utf-8", "replace"))
+    if not any(soort.startswith(v) for v in verwacht.split("|")):
+        raise RuntimeError(f"Onverwacht antwoord ({soort}): " + inhoud[:300].decode("utf-8", "replace"))
     return inhoud
 
 
@@ -888,24 +892,34 @@ def luchtfoto_materiaal(beeld, uv_naam="Luchtfoto"):
     return mat
 
 
+def _nulpunt_verplicht():
+    nulpunt = haal_nulpunt(bpy.context.scene)
+    if nulpunt is None:
+        raise RuntimeError("Geen RD-nulpunt in de scène; importeer eerst een LandXML-bestand")
+    return nulpunt
+
+
+def gebied_van(objecten, marge=0.0):
+    """Rechthoek (lokale coördinaten) om de meegegeven mesh-objecten, plus een marge."""
+    xs, ys = [], []
+    for obj in objecten:
+        p = _wereld_punten(obj)
+        if len(p):
+            xs += [p[:, 0].min(), p[:, 0].max()]
+            ys += [p[:, 1].min(), p[:, 1].max()]
+    if not xs:
+        raise RuntimeError("De selectie bevat geen punten")
+    return min(xs) - marge, min(ys) - marge, max(xs) + marge, max(ys) + marge
+
+
 def drapeer_luchtfoto(objecten, laag="Actueel_ortho25", pixel=0.25, max_pixels=4096, marge=10.0,
                       download=_download):
     """Legt de PDOK-luchtfoto op de meegegeven mesh-objecten. Geeft (beeld, pixelgrootte) terug."""
     import os
     import tempfile
 
-    nulpunt = haal_nulpunt(bpy.context.scene)
-    if nulpunt is None:
-        raise RuntimeError("Geen RD-nulpunt in de scène; importeer eerst een LandXML-bestand")
-    ox, oy = nulpunt
-
-    xs, ys = [], []
-    for obj in objecten:
-        p = _wereld_punten(obj)
-        xs += [p[:, 0].min(), p[:, 0].max()]
-        ys += [p[:, 1].min(), p[:, 1].max()]
-    x0, y0 = min(xs) - marge, min(ys) - marge
-    x1, y1 = max(xs) + marge, max(ys) + marge
+    ox, oy = _nulpunt_verplicht()
+    x0, y0, x1, y1 = gebied_van(objecten, marge)
 
     map_ = os.path.dirname(bpy.data.filepath) if bpy.data.filepath else tempfile.gettempdir()
     beeld, pixel = haal_luchtfoto(laag, x0 + ox, y0 + oy, x1 + ox, y1 + oy, pixel, max_pixels, map_, download)
@@ -918,6 +932,458 @@ def drapeer_luchtfoto(objecten, laag="Actueel_ortho25", pixel=0.25, max_pixels=4
         obj.data.materials.clear()
         obj.data.materials.append(mat)
     return beeld, pixel
+
+
+# ---------------------------------------------------------------------------
+# Hoogtekaarten uit AHN (PDOK)
+# ---------------------------------------------------------------------------
+
+AHN_WCS = "https://service.pdok.nl/rws/ahn/wcs/v1_0"
+AHN_PIXEL = 0.5
+AHN_TEGEL = 500.0  # meter per verzoek; groter kan, maar duurt lang per stuk
+AHN_MAX_GEBIED = 3000.0  # meter; daarboven wordt het te zwaar voor Blender
+
+
+def lees_tiff_float(data):
+    """Leest een enkelbands GeoTIFF met kommagetallen (zoals PDOK AHN levert) als numpy-array.
+
+    Ondersteunt geen compressie of deflate, met of zonder 'floating point predictor',
+    in stroken of tegels. Rij 0 is de noordkant. Nodata wordt NaN.
+    """
+    import struct
+    import zlib
+    import numpy as np
+
+    bo = "<" if data[:2] == b"II" else ">"
+    if struct.unpack(bo + "H", data[2:4])[0] != 42:
+        raise RuntimeError("Geen (klassieke) TIFF")
+    maten = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 16: 8}
+    codes = {1: "B", 2: "s", 3: "H", 4: "I", 6: "b", 8: "h", 9: "i", 11: "f", 12: "d", 16: "Q"}
+    ifd = struct.unpack(bo + "I", data[4:8])[0]
+    tags = {}
+    for i in range(struct.unpack(bo + "H", data[ifd:ifd + 2])[0]):
+        tag, soort, aantal, waarde = struct.unpack(bo + "HHII", data[ifd + 2 + 12 * i:ifd + 14 + 12 * i])
+        grootte = maten.get(soort, 1) * aantal
+        plek = ifd + 10 + 12 * i if grootte <= 4 else waarde
+        ruw = data[plek:plek + grootte]
+        if soort == 2:
+            tags[tag] = ruw.rstrip(b"\0").decode("ascii", "replace")
+        elif soort in codes:
+            tags[tag] = struct.unpack(bo + codes[soort] * aantal, ruw)
+
+    breedte, hoogte = tags[256][0], tags[257][0]
+    bits = tags.get(258, (32,))[0]
+    formaat = tags.get(339, (1,))[0]
+    if tags.get(277, (1,))[0] != 1 or (formaat, bits) not in ((3, 32), (3, 64)):
+        raise RuntimeError("Alleen enkelbands TIFF met kommagetallen wordt ondersteund")
+    compressie, voorspeller = tags.get(259, (1,))[0], tags.get(317, (1,))[0]
+    if compressie not in (1, 8, 32946) or voorspeller not in (1, 3):
+        raise RuntimeError(f"TIFF-compressie {compressie} / voorspeller {voorspeller} niet ondersteund")
+    nb = bits // 8
+    dtype = np.dtype(bo + ("f4" if nb == 4 else "f8"))
+
+    if 322 in tags:  # tegels
+        bw, bh = tags[322][0], tags[323][0]
+        offsets, lengtes = tags[324], tags[325]
+        blokken = [(bw, bh, (i % -(-breedte // bw)) * bw, (i // -(-breedte // bw)) * bh) for i in range(len(offsets))]
+    else:  # stroken
+        rps = tags.get(278, (hoogte,))[0]
+        offsets, lengtes = tags[273], tags[279]
+        blokken = [(breedte, min(rps, hoogte - i * rps), 0, i * rps) for i in range(len(offsets))]
+
+    uit = np.empty((hoogte, breedte), dtype=np.float64)
+    for (bw, bh, x, y), off, lengte in zip(blokken, offsets, lengtes):
+        ruw = data[off:off + lengte]
+        if compressie != 1:
+            ruw = zlib.decompress(ruw)
+        if voorspeller == 3:
+            # Per rij: bytes zijn als verschillen opgeslagen en per byte-positie gegroepeerd,
+            # meest significante byte eerst (TIFF Technical Note 3).
+            b = np.frombuffer(ruw, dtype=np.uint8)[:bw * bh * nb].reshape(bh, bw * nb)
+            b = np.cumsum(b, axis=1, dtype=np.uint8)
+            b = b.reshape(bh, nb, bw).transpose(0, 2, 1)
+            blok = np.ascontiguousarray(b).view(">f4" if nb == 4 else ">f8").reshape(bh, bw)
+        else:
+            blok = np.frombuffer(ruw, dtype=dtype)[:bw * bh].reshape(bh, bw)
+        hb, wb = min(bh, hoogte - y), min(bw, breedte - x)
+        uit[y:y + hb, x:x + wb] = blok[:hb, :wb]
+
+    nodata = tags.get(42113)
+    if nodata not in (None, "", "nan"):
+        uit[uit == float(nodata)] = np.nan
+    uit[np.abs(uit) > 1e30] = np.nan
+    return uit
+
+
+def ahn_url(dekking, x0, y0, x1, y1):
+    return (f"{AHN_WCS}?service=WCS&version=2.0.1&request=GetCoverage&CoverageId={dekking}"
+            f"&format=image/tiff&subset=x({x0:.1f},{x1:.1f})&subset=y({y0:.1f},{y1:.1f})")
+
+
+def haal_ahn(dekking, x0, y0, x1, y1, download=_download):
+    """Hoogtekaart (NAP-meters) voor een RD-rechthoek, in tegels opgehaald en aan elkaar gezet.
+
+    Geeft (array, x0, y1) terug: de rechthoek wordt naar buiten afgerond op het
+    AHN-raster; rij 0 ligt op y1 (noord), kolom 0 op x0 (west).
+    """
+    import numpy as np
+
+    p = AHN_PIXEL
+    x0, y0 = math.floor(x0 / p) * p, math.floor(y0 / p) * p
+    x1, y1 = math.ceil(x1 / p) * p, math.ceil(y1 / p) * p
+    if max(x1 - x0, y1 - y0) > AHN_MAX_GEBIED:
+        raise RuntimeError(f"Gebied is groter dan {AHN_MAX_GEBIED:.0f} m; selecteer een kleiner deel")
+    kolommen, rijen = round((x1 - x0) / p), round((y1 - y0) / p)
+    geheel = np.full((rijen, kolommen), np.nan)
+    ty = y1
+    while ty > y0 + 1e-6:
+        ty0 = max(y0, ty - AHN_TEGEL)
+        tx = x0
+        while tx < x1 - 1e-6:
+            tx1 = min(x1, tx + AHN_TEGEL)
+            blok = lees_tiff_float(download(ahn_url(dekking, tx, ty0, tx1, ty), "image/tiff"))
+            r, k = round((y1 - ty) / p), round((tx - x0) / p)
+            blok = blok[:rijen - r, :kolommen - k]
+            geheel[r:r + blok.shape[0], k:k + blok.shape[1]] = blok
+            tx = tx1
+        ty = ty0
+    return geheel, x0, y1
+
+
+# ---------------------------------------------------------------------------
+# Bomen uit AHN
+# ---------------------------------------------------------------------------
+
+def _venster_max(a, straal):
+    """Maximum over een vierkant venster van (2*straal+1) pixels, zonder scipy."""
+    import numpy as np
+
+    k = 2 * straal + 1
+    venster = np.lib.stride_tricks.sliding_window_view
+    rijen = venster(np.pad(a, ((0, 0), (straal, straal)), constant_values=-np.inf), k, axis=1).max(axis=-1)
+    return venster(np.pad(rijen, ((straal, straal), (0, 0)), constant_values=-np.inf), k, axis=0).max(axis=-1)
+
+
+def vind_bomen(dsm, dtm, pixel=AHN_PIXEL, min_hoogte=3.0, min_afstand=4.0):
+    """Zoekt boomtoppen in het verschil tussen DSM (alles) en DTM (maaiveld).
+
+    Onder gebouwen en water heeft het AHN-maaiveld geen waarde; daar komen dus
+    geen bomen. Geeft een lijst (rij, kolom, hoogte, kruinstraal) terug, met hoogte
+    en straal in meters.
+    """
+    import numpy as np
+
+    chm = dsm - dtm
+    geldig = np.isfinite(chm)
+    # Licht gladstrijken (3x3 gemiddelde) tegen ruis in de kruin.
+    nul = np.where(geldig, chm, 0.0)
+    som = sum(np.roll(np.roll(nul, dy, 0), dx, 1) for dy in (-1, 0, 1) for dx in (-1, 0, 1))
+    aantal = sum(np.roll(np.roll(geldig, dy, 0), dx, 1) for dy in (-1, 0, 1) for dx in (-1, 0, 1))
+    glad = np.where(geldig, som / np.maximum(aantal, 1), -np.inf)
+
+    straal_px = max(1, round(min_afstand / 2 / pixel))
+    # Langs de rand van gebouwen (waar het maaiveld ophoudt) lijkt de gevel een boom; daar niet
+    # zoeken. Kleine gaten in het maaiveld (onder dichte kruinen) eerst wegwerken, zodat alleen
+    # grote gaten als gebouwen en water overblijven; daaromheen een strook van 1,5 m.
+    def groei(masker, r):
+        return _venster_max(masker.astype(float), r) > 0
+
+    krimp = max(1, round(2.0 / pixel))
+    gat = ~np.isfinite(dtm)
+    groot_gat = ~groei(~gat, krimp)
+    bij_gebouw = groei(groot_gat, krimp + max(1, round(1.5 / pixel)))
+    toppen = np.argwhere((glad >= _venster_max(glad, straal_px)) & (glad >= min_hoogte) & ~bij_gebouw)
+
+    # Toppen op een vlak plateau of vlak bij elkaar samenvoegen: de hoogste wint.
+    hoogtes = glad[toppen[:, 0], toppen[:, 1]]
+    bezet, bomen = {}, []
+    cel = min_afstand / pixel
+    richtingen = [(math.cos(a), math.sin(a)) for a in np.linspace(0, 2 * math.pi, 8, endpoint=False)]
+    for i in np.argsort(-hoogtes):
+        r, k = toppen[i]
+        h = float(chm[r, k]) if geldig[r, k] else float(hoogtes[i])
+        sleutel = (int(r // cel), int(k // cel))
+        buren = [(sleutel[0] + a, sleutel[1] + b) for a in (-1, 0, 1) for b in (-1, 0, 1)]
+        if any(math.hypot(r - bezet[n][0], k - bezet[n][1]) * pixel < min_afstand for n in buren if n in bezet):
+            continue
+        bezet[sleutel] = (r, k)
+        # Kruinstraal: waar de hoogte in 8 richtingen onder 60% van de top zakt.
+        stralen = []
+        for dy, dx in richtingen:
+            afstand = 1
+            while afstand * pixel < 12.0:
+                rr, kk = round(r + dy * afstand), round(k + dx * afstand)
+                if not (0 <= rr < chm.shape[0] and 0 <= kk < chm.shape[1]) \
+                        or not geldig[rr, kk] or chm[rr, kk] < 0.6 * h:
+                    break
+                afstand += 1
+            stralen.append(afstand * pixel)
+        straal = float(np.clip(np.median(stralen), max(1.0, 0.25 * h), min(0.6 * h, 10.0)))
+        bomen.append((int(r), int(k), h, straal))
+    return bomen
+
+
+def _kruin_varianten(aantal=4, onderverdeling=2):
+    """Een paar grillige bollen (straal 1) als kruinvormen, zodat niet elke boom gelijk is."""
+    import numpy as np
+    import random
+
+    bm = bmesh.new()
+    bmesh.ops.create_icosphere(bm, subdivisions=onderverdeling, radius=1.0)
+    punten = np.array([v.co[:] for v in bm.verts])
+    vlakken = [tuple(v.index for v in f.verts) for f in bm.faces]
+    bm.free()
+    varianten = []
+    for n in range(aantal):
+        rnd = random.Random(n)
+        golven = [(np.array([rnd.uniform(-1, 1) for _ in range(3)]), rnd.uniform(0, 6.3)) for _ in range(4)]
+        factor = 1.0 + sum(0.07 * np.sin(3.0 * punten @ (g / np.linalg.norm(g)) + fase) for g, fase in golven)
+        varianten.append(punten * factor[:, None])
+    return varianten, vlakken
+
+
+def _stam(segmenten=6):
+    import numpy as np
+
+    hoeken = np.linspace(0, 2 * math.pi, segmenten, endpoint=False)
+    onder = np.column_stack([np.cos(hoeken), np.sin(hoeken), np.zeros(segmenten)])
+    boven = onder + [0, 0, 1]
+    punten = np.vstack([onder, boven])
+    vlakken = [(i, (i + 1) % segmenten, segmenten + (i + 1) % segmenten, segmenten + i) for i in range(segmenten)]
+    return punten, vlakken
+
+
+def bomen_mesh(bomen, naam="Bomen (AHN)"):
+    """Eén mesh met alle bomen: (x, y, z_voet, hoogte, kruinstraal) in lokale coördinaten."""
+    import numpy as np
+    import random
+
+    kruinen, kruin_vlakken = _kruin_varianten()
+    stam, stam_vlakken = _stam()
+    punten, vlakken, materiaal = [], [], []
+    teller = 0
+    for x, y, z, h, straal in bomen:
+        rnd = random.Random(hash((round(x, 1), round(y, 1))))
+        hoek = rnd.uniform(0, 2 * math.pi)
+        c, s = math.cos(hoek), math.sin(hoek)
+        draai = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+        kruinhoogte = min(0.4 * h, max(1.1 * straal, 0.25 * h))  # halve hoogte van de kruin
+        midden = h - kruinhoogte
+        kruin = (kruinen[rnd.randrange(len(kruinen))] * [straal, straal, kruinhoogte]) @ draai.T
+        punten.append(kruin + [x, y, z + midden])
+        vlakken += [tuple(teller + i for i in f) for f in kruin_vlakken]
+        materiaal += [0] * len(kruin_vlakken)
+        teller += len(kruin)
+        dikte = min(max(0.025 * h, 0.12), 0.5)
+        punten.append(stam * [dikte, dikte, midden] + [x, y, z])
+        vlakken += [tuple(teller + i for i in f) for f in stam_vlakken]
+        materiaal += [1] * len(stam_vlakken)
+        teller += len(stam)
+
+    mesh = bpy.data.meshes.new(naam)
+    if punten:
+        mesh.from_pydata(np.vstack(punten).tolist(), [], vlakken)
+        mesh.polygons.foreach_set("material_index", materiaal)
+        mesh.polygons.foreach_set("use_smooth", [True] * len(vlakken))
+    mesh.update()
+    kruin_mat = bpy.data.materials.get("Boom kruin")
+    if kruin_mat is None:
+        kruin_mat = bpy.data.materials.new("Boom kruin")
+        kruin_mat.diffuse_color = (0.05, 0.11, 0.025, 1.0)
+        if not kruin_mat.use_nodes:
+            kruin_mat.use_nodes = True
+        bouw_textuur(kruin_mat, {"type": "ruis", "c1": (0.03, 0.08, 0.015), "c2": (0.07, 0.13, 0.03),
+                                 "donker": (0.015, 0.04, 0.01), "vlek": 6, "fijn": 2.0, "bump": 0.5}, 0.9)
+    mesh.materials.append(kruin_mat)
+    mesh.materials.append(_effen_materiaal("Boom stam", (0.07, 0.045, 0.03), 0.9))
+    return mesh
+
+
+def _effen_materiaal(naam, kleur, ruwheid):
+    mat = bpy.data.materials.get(naam)
+    if mat is None:
+        mat = bpy.data.materials.new(naam)
+        mat.diffuse_color = (*kleur, 1.0)
+        if not mat.use_nodes:
+            mat.use_nodes = True
+        bsdf = mat.node_tree.nodes.get("Principled BSDF")
+        bsdf.inputs["Base Color"].default_value = (*kleur, 1.0)
+        bsdf.inputs["Roughness"].default_value = ruwheid
+    return mat
+
+
+def _bovenste_treffers(punten, doelen):
+    """Schiet per (x, y) een straal recht naar beneden en geeft per punt (object, z) van de
+    hoogste treffer terug, of None. `doelen` zijn de zichtbare mesh-objecten."""
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+
+    diepte = bpy.context.evaluated_depsgraph_get()
+    bomen_bvh = []
+    for obj in doelen:
+        m = obj.matrix_world
+        bomen_bvh.append((obj, BVHTree.FromObject(obj, diepte), m, m.inverted()))
+    uit = []
+    for x, y in punten:
+        beste = None
+        for obj, bvh, m, inv in bomen_bvh:
+            start = inv @ Vector((x, y, 10000.0))
+            richting = (inv.to_3x3() @ Vector((0.0, 0.0, -1.0))).normalized()
+            treffer = bvh.ray_cast(start, richting)[0]
+            if treffer is not None:
+                z = (m @ treffer).z
+                if beste is None or z > beste[1]:
+                    beste = (obj, z)
+        uit.append(beste)
+    return uit
+
+
+def plaats_bomen(objecten, min_hoogte=3.0, alleen_op_selectie=True, download=_download):
+    """Zoekt bomen in het AHN binnen het gebied van de selectie en zet ze neer.
+
+    Met alleen_op_selectie komt een boom alleen waar een geselecteerd object het
+    bovenste oppervlak is (en staat hij daar precies op); zo verschijnen er geen
+    bomen door een ontwerp heen dat boven het bestaande maaiveld ligt.
+    """
+    import numpy as np
+
+    ox, oy = _nulpunt_verplicht()
+    x0, y0, x1, y1 = gebied_van(objecten)
+    dsm, gx0, gy1 = haal_ahn("dsm_05m", x0 + ox, y0 + oy, x1 + ox, y1 + oy, download)
+    dtm, _, _ = haal_ahn("dtm_05m", x0 + ox, y0 + oy, x1 + ox, y1 + oy, download)
+    gevonden = vind_bomen(dsm, dtm, min_hoogte=min_hoogte)
+
+    p = AHN_PIXEL
+    posities = [(gx0 - ox + (k + 0.5) * p, gy1 - oy - (r + 0.5) * p) for r, k, _, _ in gevonden]
+    if alleen_op_selectie:
+        doelen = [o for o in bpy.context.scene.objects if o.type == "MESH" and o.visible_get()
+                  and not o.name.startswith(("Bomen", "Gebouwen"))]
+        treffers = _bovenste_treffers(posities, doelen)
+    bomen = []
+    for i, ((r, k, h, straal), (x, y)) in enumerate(zip(gevonden, posities)):
+        if alleen_op_selectie:
+            if treffers[i] is None or treffers[i][0] not in objecten:
+                continue
+            z = treffers[i][1]
+        else:
+            z = dtm[r, k] if np.isfinite(dtm[r, k]) else np.nanmedian(dtm[max(r - 5, 0):r + 6, max(k - 5, 0):k + 6])
+            if not np.isfinite(z):
+                continue
+        bomen.append((x, y, float(z), h, straal))
+
+    obj = bpy.data.objects.new("Bomen (AHN)", bomen_mesh(bomen))
+    bpy.context.scene.collection.objects.link(obj)
+    obj["bron"] = "AHN via PDOK (dsm_05m - dtm_05m)"
+    return obj, len(bomen), len(gevonden)
+
+
+# ---------------------------------------------------------------------------
+# Gebouwen uit de 3D BAG (TU Delft)
+# ---------------------------------------------------------------------------
+
+BAG3D_API = "https://api.3dbag.nl/collections/pand/items"
+BAG3D_MAX = 20000
+BAG3D_LODS = [
+    ("2.2", "LoD 2.2 (dakvormen)", "Gebouwen met hun dakvorm, het meest gedetailleerd"),
+    ("1.3", "LoD 1.3 (dakhoogtes)", "Blokken met verschillende hoogtes per dakdeel"),
+    ("1.2", "LoD 1.2 (blokken)", "Eén blok per gebouw"),
+]
+
+
+def haal_3dbag(x0, y0, x1, y1, download=_download, maximum=BAG3D_MAX):
+    """Haalt alle panden in een RD-rechthoek op (de API geeft 100 per pagina)."""
+    import json
+
+    url = f"{BAG3D_API}?bbox={x0:.1f},{y0:.1f},{x1:.1f},{y1:.1f}&limit=100"
+    paginas, aantal = [], 0
+    while url and aantal < maximum:
+        pagina = json.loads(download(url, "application/json|application/city+json"))
+        paginas.append(pagina)
+        aantal += len(pagina.get("features", []))
+        url = next((l["href"] for l in pagina.get("links", []) if l.get("rel") == "next"), None)
+    return paginas
+
+
+def _normaal(punten):
+    """Normaal van een veelhoek (methode van Newell), niet genormaliseerd."""
+    nx = ny = nz = 0.0
+    for (x1, y1, z1), (x2, y2, z2) in zip(punten, punten[1:] + punten[:1]):
+        nx += (y1 - y2) * (z1 + z2)
+        ny += (z1 - z2) * (x1 + x2)
+        nz += (x1 - x2) * (y1 + y2)
+    return nx, ny, nz
+
+
+def gebouwen_uit_3dbag(paginas, lod="2.2", ox=0.0, oy=0.0):
+    """Zet 3D BAG-pagina's (CityJSON) om in (punten, vlakken, soorten, aantal gebouwen).
+
+    Soort per vlak: 0 = schuin dak, 1 = plat dak, 2 = gevel. Grondvlakken worden
+    weggelaten (die zie je toch niet); gaten in vlakken ook.
+    """
+    punten, vlakken, soorten, gebouwen = [], [], [], 0
+    for pagina in paginas:
+        t = pagina.get("metadata", {}).get("transform", {"scale": [1, 1, 1], "translate": [0, 0, 0]})
+        (sx, sy, sz), (tx, ty, tz) = t["scale"], t["translate"]
+        for feature in pagina.get("features", []):
+            verts = [(x * sx + tx - ox, y * sy + ty - oy, z * sz + tz) for x, y, z in feature["vertices"]]
+            begin = len(punten)
+            gebruikt = False
+            for obj in feature["CityObjects"].values():
+                for geo in obj.get("geometry", []):
+                    if str(geo.get("lod")) != lod:
+                        continue
+                    sem = geo.get("semantics", {})
+                    typen = [s.get("type") for s in sem.get("surfaces", [])]
+                    if geo["type"] == "Solid":
+                        schillen, waarden = geo["boundaries"], sem.get("values", [])
+                    elif geo["type"] == "MultiSurface":
+                        schillen, waarden = [geo["boundaries"]], [sem.get("values", [])]
+                    else:
+                        continue
+                    for si, schil in enumerate(schillen):
+                        for vi, vlak in enumerate(schil):
+                            ring = vlak[0]
+                            if len(ring) < 3:
+                                continue
+                            try:
+                                soort = typen[waarden[si][vi]]
+                            except (IndexError, TypeError):
+                                soort = None
+                            if soort == "GroundSurface":
+                                continue
+                            if soort == "RoofSurface":
+                                nx, ny, nz = _normaal([verts[i] for i in ring])
+                                lengte = math.sqrt(nx * nx + ny * ny + nz * nz) or 1.0
+                                code = 1 if nz / lengte > 0.97 else 0
+                            else:
+                                code = 2
+                            vlakken.append(tuple(begin + i for i in ring))
+                            soorten.append(code)
+                            gebruikt = True
+            punten += verts
+            gebouwen += gebruikt
+    return punten, vlakken, soorten, gebouwen
+
+
+def plaats_gebouwen(objecten, lod="2.2", marge=50.0, download=_download):
+    ox, oy = _nulpunt_verplicht()
+    x0, y0, x1, y1 = gebied_van(objecten, marge)
+    paginas = haal_3dbag(x0 + ox, y0 + oy, x1 + ox, y1 + oy, download)
+    punten, vlakken, soorten, aantal = gebouwen_uit_3dbag(paginas, lod, ox, oy)
+
+    mesh = bpy.data.meshes.new("Gebouwen (3D BAG)")
+    mesh.from_pydata(punten, [], vlakken)
+    mesh.polygons.foreach_set("material_index", soorten)
+    mesh.validate()
+    mesh.update()
+    for naam, kleur, ruwheid in (("Gebouw dak", (0.05, 0.025, 0.02), 0.7),
+                                 ("Gebouw plat dak", (0.12, 0.12, 0.12), 0.9),
+                                 ("Gebouw gevel", (0.42, 0.24, 0.15), 0.9)):
+        mesh.materials.append(_effen_materiaal(naam, kleur, ruwheid))
+    obj = bpy.data.objects.new("Gebouwen (3D BAG)", mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    obj["bron"] = "3D BAG (TU Delft), LoD " + lod
+    return obj, aantal
 
 
 # ---------------------------------------------------------------------------
@@ -996,6 +1462,71 @@ class OBJECT_OT_luchtfoto_pdok(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class OBJECT_OT_gebouwen_3dbag(bpy.types.Operator):
+    """Zet de gebouwen uit de 3D BAG (TU Delft) rond de geselecteerde surfaces neer, met dakvorm"""
+
+    bl_idname = "object.gebouwen_3dbag"
+    bl_label = "Gebouwen laden (3D BAG)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    lod: EnumProperty(name="Detail", items=BAG3D_LODS, default="2.2")
+    marge: FloatProperty(name="Marge (m)", description="Extra rand rondom de surfaces", default=50.0, min=0.0)
+
+    @classmethod
+    def poll(cls, context):
+        return any(o.type == "MESH" for o in context.selected_objects)
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        objecten = [o for o in context.selected_objects if o.type == "MESH"]
+        try:
+            _, aantal = plaats_gebouwen(objecten, self.lod, self.marge)
+        except Exception as fout:  # netwerk- of API-fout: melden in plaats van crashen
+            self.report({"ERROR"}, f"Gebouwen ophalen mislukt: {fout}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"{aantal} gebouwen geladen uit de 3D BAG")
+        return {"FINISHED"}
+
+
+class OBJECT_OT_bomen_ahn(bpy.types.Operator):
+    """Zoek bomen in het AHN en zet ze op de geselecteerde surfaces, met hun gemeten hoogte en kruin"""
+
+    bl_idname = "object.bomen_ahn"
+    bl_label = "Bomen plaatsen (AHN)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    min_hoogte: FloatProperty(
+        name="Minimale hoogte (m)",
+        description="Lagere begroeiing (struiken, heggen) wordt overgeslagen",
+        default=3.0, min=1.0, max=30.0,
+    )
+    alleen_op_selectie: BoolProperty(
+        name="Alleen op de selectie",
+        description="Alleen bomen waar een geselecteerde surface het bovenste oppervlak is; "
+                    "zo komen er geen bomen door je ontwerp heen",
+        default=True,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return any(o.type == "MESH" for o in context.selected_objects)
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        objecten = [o for o in context.selected_objects if o.type == "MESH"]
+        try:
+            _, geplaatst, gevonden = plaats_bomen(objecten, self.min_hoogte, self.alleen_op_selectie)
+        except Exception as fout:  # netwerk- of PDOK-fout: melden in plaats van crashen
+            self.report({"ERROR"}, f"Bomen ophalen mislukt: {fout}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"{geplaatst} bomen geplaatst ({gevonden} gevonden in het AHN)")
+        return {"FINISHED"}
+
+
 class OBJECT_OT_kleuren_op_naam(bpy.types.Operator):
     """Geef de geselecteerde surfaces een materiaal op basis van hun naam (gras, asfalt, zetsteen, ...)"""
 
@@ -1035,12 +1566,16 @@ def _menu_object(self, context):
     self.layout.separator()
     self.layout.operator(OBJECT_OT_kleuren_op_naam.bl_idname, icon="COLOR")
     self.layout.operator(OBJECT_OT_luchtfoto_pdok.bl_idname, icon="IMAGE_DATA")
+    self.layout.operator(OBJECT_OT_gebouwen_3dbag.bl_idname, icon="HOME")
+    self.layout.operator(OBJECT_OT_bomen_ahn.bl_idname, icon="OUTLINER_OB_POINTCLOUD")
 
 
 def register():
     bpy.utils.register_class(IMPORT_OT_landxml)
     bpy.utils.register_class(OBJECT_OT_luchtfoto_pdok)
     bpy.utils.register_class(OBJECT_OT_kleuren_op_naam)
+    bpy.utils.register_class(OBJECT_OT_gebouwen_3dbag)
+    bpy.utils.register_class(OBJECT_OT_bomen_ahn)
     bpy.types.TOPBAR_MT_file_import.append(_menu)
     bpy.types.VIEW3D_MT_object.append(_menu_object)
 
@@ -1048,6 +1583,8 @@ def register():
 def unregister():
     bpy.types.VIEW3D_MT_object.remove(_menu_object)
     bpy.types.TOPBAR_MT_file_import.remove(_menu)
+    bpy.utils.unregister_class(OBJECT_OT_bomen_ahn)
+    bpy.utils.unregister_class(OBJECT_OT_gebouwen_3dbag)
     bpy.utils.unregister_class(OBJECT_OT_kleuren_op_naam)
     bpy.utils.unregister_class(OBJECT_OT_luchtfoto_pdok)
     bpy.utils.unregister_class(IMPORT_OT_landxml)

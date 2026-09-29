@@ -1,6 +1,6 @@
 # Civil 3D naar Blender (LandXML-import)
 
-Een gratis Blender-add-on die de **LandXML-export van Civil 3D** inleest en er desgewenst de PDOK-luchtfoto op legt. Je hebt geen FBX- of IFC-export nodig: LandXML zit in elke Civil 3D.
+Een gratis Blender-add-on die de **LandXML-export van Civil 3D** inleest en er desgewenst de luchtfoto, de gebouwen en de bomen van de bestaande omgeving bij zet. Je hebt geen FBX- of IFC-export nodig: LandXML zit in elke Civil 3D.
 
 ![Voorbeeld: maaiveld, as met boog, riolering en band](voorbeeld/voorbeeld.png)
 
@@ -91,6 +91,37 @@ Goed om te weten:
 - Een nieuwe versie van de add-on installeer je op dezelfde manier als de eerste keer (*Install from Disk*). Herstart Blender daarna.
 
 ![Luchtfoto op het voorbeeldmaaiveld](voorbeeld/luchtfoto.png)
+
+## 6. Gebouwen en bomen rondom
+
+Twee knoppen zetten de bestaande omgeving neer rond de geselecteerde surfaces. Beide halen de gegevens van internet, uit open bronnen voor heel Nederland.
+
+![Lekdijk bij Nieuw-Lekkerland: luchtfoto, 377 gebouwen uit de 3D BAG en bomen uit het AHN](voorbeeld/gebouwen_bomen.png)
+
+### Gebouwen (3D BAG)
+
+1. Selecteer het maaiveld.
+2. Kies **Object → Gebouwen laden (3D BAG)**.
+3. Kies het detail: *LoD 2.2* (met dakvormen, standaard), *1.3* (blokken met verschillende dakhoogtes) of *1.2* (één blok per gebouw). Kies ook de marge rond je selectie (standaard 50 m).
+
+Alle gebouwen komen in één object, *Gebouwen (3D BAG)*, met drie materialen: *Gebouw dak* (schuine daken), *Gebouw plat dak* en *Gebouw gevel*. Een gebouw dat gesloopt wordt haal je weg in Edit Mode (**Tab**): wijs het aan, druk op **L** en daarna op **X → Faces**.
+
+Bron: 3D BAG van 3DGI en de TU Delft (CC BY 4.0), gemaakt uit de BAG en het AHN.
+
+### Bomen (AHN)
+
+1. Selecteer **alleen het bestaande maaiveld**.
+2. Kies **Object → Bomen plaatsen (AHN)**.
+3. Stel de minimale hoogte in (standaard 3 m, zodat struiken en heggen niet meetellen).
+
+Hoe het werkt: het AHN heeft een hoogtekaart van alles (DSM) en een van alleen het maaiveld (DTM). Het verschil is de hoogte van de begroeiing. In dat verschil zoekt de add-on de boomtoppen en meet hij per boom de hoogte en de kruinbreedte. Daarna zet hij er een eenvoudige boom neer.
+
+- **Alleen op de selectie** (standaard aan): er komt alleen een boom waar het geselecteerde maaiveld het bovenste oppervlak is. Bomen op de oude dijk komen dus niet door je nieuwe dijkontwerp heen. De boom staat precies op je maaiveld.
+- Onder gebouwen en water heeft het AHN geen maaiveld, en langs gebouwranden zoekt de add-on bewust niet. Zo verschijnen er geen "bomen" op daken of tegen gevels.
+- De bomen zijn schetsmatig: een stam en een grillige kruin op de gemeten maat. Ze staan wel op de goede plek en hebben de goede grootte.
+- Het gebied mag maximaal 3 × 3 km zijn. Bij een groter gebied selecteer je een deel.
+
+Bron: AHN via PDOK (CC0).
 
 ## Opdrachtregel
 
