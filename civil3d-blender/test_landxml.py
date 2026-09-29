@@ -439,6 +439,45 @@ def test_gebouwen_en_bomen_in_blender():
     assert [m.name for m in obj.data.materials] == ["Gebouw dak", "Gebouw plat dak", "Gebouw gevel"]
 
 
+def _strook(naam, x0, z0, x1, z1, lengte=200.0):
+    me = bpy.data.meshes.new(naam)
+    me.from_pydata([(x0, -lengte / 2, z0), (x1, -lengte / 2, z1), (x1, lengte / 2, z1), (x0, lengte / 2, z0)],
+                   [], [(0, 1, 2, 3)])
+    obj = bpy.data.objects.new(naam, me)
+    bpy.context.scene.collection.objects.link(obj)
+    return obj
+
+
+def test_aankleden():
+    import numpy as np
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    stroken = [
+        _strook("Binnentalud_Teelaarde", -20, 0.0, -2, 4.0),
+        _strook("Kruin_Asfalt", -2, 4.0, 2, 4.0),
+        _strook("Buitentalud_Berm", 2, 4.0, 20, 0.0),
+        _strook("Ontwerp_Zetsteen", 2, 4.5, 20, 0.5, lengte=100.0),  # ligt over de helft van de berm
+    ]
+    lx.kleur_surfaces(stroken)
+    telling = lx.aankleden(stroken, schapen_per_ha=30, autos_per_100m=2, mensen_per_100m=3)
+    assert telling["schapen"] > 20 and telling["auto's"] >= 2 and telling["mensen"] > 3, telling
+
+    autos = bpy.data.objects["Auto's"]
+    p = np.array([v.co[:] for v in autos.data.vertices])
+    assert np.abs(p[:, 0]).max() < 2.3, "auto's horen (bijna) binnen de 4 m brede weg te staan"
+    assert abs(p[:, 2].min() - 4.0) < 0.05, "banden horen op het asfalt te staan"
+
+    schapen = bpy.data.objects["Schapen"]
+    p = np.array([v.co[:] for v in schapen.data.vertices])
+    assert np.abs(p[:, 0]).min() > 1.0, "geen schapen op de weg"
+    oost = p[p[:, 0] > 2]
+    assert len(oost) == 0 or (np.abs(oost[:, 1]) > 49).all(), "geen schapen onder het ontwerp"
+
+    # Opnieuw uitvoeren vervangt de vorige aankleding.
+    lx.aankleden(stroken, variatie=2)
+    assert "Schapen.001" not in bpy.data.objects and bpy.data.objects["Schapen"].users_collection
+
+
 def test_pdok_en_3dbag_echt():
     """Echte AHN- en 3D BAG-gegevens rond het RD-nulpunt in Amersfoort; overgeslagen zonder internet."""
     import numpy as np

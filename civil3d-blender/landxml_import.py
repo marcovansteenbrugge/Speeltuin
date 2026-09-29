@@ -13,7 +13,8 @@ opnieuw toepassen kan met "Object > Materialen op naam (surfaces)".
 "Object > Luchtfoto draperen (PDOK)" legt de luchtfoto van PDOK op de
 geselecteerde surfaces, op de juiste RD-coördinaten. "Object > Gebouwen laden
 (3D BAG)" en "Object > Bomen plaatsen (AHN)" zetten de bestaande gebouwen en
-bomen rond de selectie neer.
+bomen rond de selectie neer. "Object > Aankleden" zet schapen op het gras en
+auto's en mensen op het asfalt.
 
 Grote coördinaten (RD, bijvoorbeeld X=155000, Y=463000) worden naar een lokaal
 nulpunt verschoven, omdat Blender daar anders onnauwkeurig mee rekent. Het
@@ -28,7 +29,7 @@ Gebruik vanaf de opdrachtregel:
 bl_info = {
     "name": "LandXML-import (Civil 3D)",
     "author": "Speeltuin",
-    "version": (1, 3, 0),
+    "version": (1, 4, 0),
     "blender": (3, 6, 0),
     "location": "File > Import > LandXML (.xml); Object-menu",
     "description": "Importeert surfaces, pipe networks, alignments en feature lines uit LandXML, "
@@ -1387,6 +1388,343 @@ def plaats_gebouwen(objecten, lod="2.2", marge=50.0, download=_download):
 
 
 # ---------------------------------------------------------------------------
+# Aankleden: schapen, mensen en auto's
+# ---------------------------------------------------------------------------
+
+GRAS_SOORTEN = {"gras", "beheerstrook"}
+WEG_SOORTEN = {"asfalt"}
+LOOP_SOORTEN = {"asfalt", "fietspad"}
+AANKLEDING = ("Schapen", "Mensen", "Auto's")
+
+LAKKLEUREN = [(0.55, 0.56, 0.58), (0.02, 0.02, 0.025), (0.8, 0.8, 0.78), (0.03, 0.08, 0.25),
+              (0.35, 0.02, 0.02), (0.15, 0.16, 0.17)]
+KLEDING = [(0.05, 0.12, 0.35), (0.5, 0.08, 0.05), (0.08, 0.2, 0.08), (0.6, 0.45, 0.1),
+           (0.3, 0.3, 0.32), (0.7, 0.7, 0.68)]
+HUID = [(0.62, 0.42, 0.32), (0.45, 0.28, 0.18), (0.25, 0.14, 0.08)]
+
+
+def soort_van(obj):
+    """Soort oppervlak van een object: uit het materiaal ("Oppervlak gras") of anders uit de naam."""
+    for mat in obj.data.materials:
+        if mat is not None and mat.name.startswith("Oppervlak "):
+            return mat.name[len("Oppervlak "):].split(".")[0]
+    soort = oppervlak_voor_naam(obj.name)
+    return soort[0] if soort else None
+
+
+def _bm_vorm(maak):
+    """Punten en vlakken van een bmesh-vorm, als numpy-array en lijst."""
+    import numpy as np
+
+    bm = bmesh.new()
+    maak(bm)
+    punten = np.array([v.co[:] for v in bm.verts])
+    vlakken = [tuple(v.index for v in f.verts) for f in bm.faces]
+    bm.free()
+    return punten, vlakken
+
+
+def _bol(midden, schaal, onderverdeling=2):
+    punten, vlakken = _bm_vorm(lambda bm: bmesh.ops.create_icosphere(bm, subdivisions=onderverdeling, radius=1.0))
+    return punten * schaal + midden, vlakken
+
+
+def _cilinder(midden, straal, lengte, as_="z", segmenten=8):
+    import numpy as np
+
+    punten, vlakken = _bm_vorm(lambda bm: bmesh.ops.create_cone(
+        bm, cap_ends=True, segments=segmenten, radius1=1.0, radius2=1.0, depth=1.0))
+    punten = punten * [straal, straal, lengte]
+    if as_ == "y":
+        punten = punten[:, [0, 2, 1]]
+        vlakken = [f[::-1] for f in vlakken]  # spiegeling: omloopzin omdraaien
+    return punten + midden, vlakken
+
+
+def _doos(midden, maat, afronding=0.0):
+    import numpy as np
+
+    def maak(bm):
+        bmesh.ops.create_cube(bm, size=1.0)
+        bmesh.ops.scale(bm, vec=maat, verts=bm.verts)
+        if afronding:
+            bmesh.ops.bevel(bm, geom=bm.edges[:] + bm.verts[:], offset=afronding, segments=2, affect="EDGES")
+
+    punten, vlakken = _bm_vorm(maak)
+    return punten + midden, vlakken
+
+
+def _schaap(rnd):
+    """Onderdelen (punten, vlakken, materiaal) van een schaap van ca. 1,2 m, kop richting +x."""
+    import numpy as np
+
+    lijf, v = _bol((0, 0, 0.6), (0.6, 0.36, 0.33))
+    golf = 1.0 + 0.06 * np.sin(9 * lijf[:, 0] + rnd.uniform(0, 6)) * np.sin(11 * lijf[:, 1])
+    lijf = (lijf - [0, 0, 0.6]) * golf[:, None] + [0, 0, 0.6]
+    delen = [(lijf, v, 0)]
+    grazen = rnd.random() < 0.6
+    kop = (0.66, 0, 0.4) if grazen else (0.62, 0, 0.78)
+    delen.append((*_bol(kop, (0.17, 0.1, 0.12), 2), 1))
+    for x in (-0.32, 0.32):
+        for y in (-0.15, 0.15):
+            delen.append((*_cilinder((x, y, 0.2), 0.032, 0.4, segmenten=6), 1))
+    return delen
+
+
+def _mens(rnd):
+    """Onderdelen van een staand persoon van ca. 1,75 m. Materiaal: 0 kleding, 1 broek, 2 huid."""
+    delen = []
+    for y in (-0.085, 0.085):
+        delen.append((*_cilinder((0, y, 0.46), 0.075, 0.92, segmenten=8), 1))
+    delen.append((*_bol((0, 0, 1.18), (0.14, 0.2, 0.34), 2), 0))
+    for y in (-0.225, 0.225):
+        delen.append((*_cilinder((0, y, 1.12), 0.05, 0.62, segmenten=8), 0))
+    delen.append((*_bol((0, 0, 1.63), (0.1, 0.09, 0.12), 2), 2))
+    return delen
+
+
+def _auto(rnd):
+    """Onderdelen van een personenauto van ca. 4,3 m, neus richting +x.
+    Materiaal: 0 lak, 1 ruiten, 2 banden."""
+    cabine, v = _doos((-0.25, 0, 1.2), (2.4, 1.6, 0.6), 0.1)
+    boven = cabine[:, 2] > 1.2
+    cabine[boven, 0] = (cabine[boven, 0] + 0.35) * 0.72 - 0.35  # voor- en achterruit lopen schuin af
+    cabine[boven, 1] *= 0.9
+    dak, dv = _doos((-0.45, 0, 1.51), (1.4, 1.3, 0.05), 0.02)
+    delen = [(*_doos((0, 0, 0.6), (4.3, 1.8, 0.75), 0.12), 0), (cabine, v, 1), (dak, dv, 0)]
+    for x in (-1.35, 1.35):
+        for y in (-0.8, 0.8):
+            delen.append((*_cilinder((x, y, 0.33), 0.33, 0.22, as_="y", segmenten=12), 2))
+    return delen
+
+
+def _voeg_samen(exemplaren):
+    """exemplaren: lijst van (onderdelen, x, y, z, hoek, schaal, materiaal_verschuiving)."""
+    import numpy as np
+
+    punten, vlakken, materiaal, teller = [], [], [], 0
+    for delen, x, y, z, hoek, schaal, extra in exemplaren:
+        c, s = math.cos(hoek), math.sin(hoek)
+        draai = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+        for p, v, m in delen:
+            punten.append((p * schaal) @ draai.T + [x, y, z])
+            vlakken += [tuple(teller + i for i in f) for f in v]
+            materiaal += [extra.get(m, m)] * len(v)
+            teller += len(p)
+    if not punten:
+        return [], [], []
+    return np.vstack(punten).tolist(), vlakken, materiaal
+
+
+def _object_uit(naam, punten, vlakken, materiaal, materialen, col, glad=False):
+    mesh = bpy.data.meshes.new(naam)
+    if punten:
+        mesh.from_pydata(punten, [], vlakken)
+        mesh.polygons.foreach_set("material_index", materiaal)
+        if glad:
+            mesh.polygons.foreach_set("use_smooth", [True] * len(vlakken))
+    mesh.update()
+    for mat in materialen:
+        mesh.materials.append(mat)
+    obj = bpy.data.objects.new(naam, mesh)
+    col.objects.link(obj)
+    return obj
+
+
+def _driehoeken(objecten):
+    """Alle driehoeken (wereldcoördinaten) en hun oppervlak, voor gelijkmatig verspreiden."""
+    import numpy as np
+
+    lijst = []
+    for obj in objecten:
+        mesh = obj.data
+        mesh.calc_loop_triangles()
+        idx = np.empty(len(mesh.loop_triangles) * 3, dtype=np.int64)
+        mesh.loop_triangles.foreach_get("vertices", idx)
+        lijst.append(_wereld_punten(obj)[idx].reshape(-1, 3, 3))
+    tri = np.concatenate(lijst) if lijst else np.zeros((0, 3, 3))
+    opp = 0.5 * np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
+    return tri, opp
+
+
+def _willekeurige_punten(tri, opp, n, rng):
+    import numpy as np
+
+    if n <= 0 or opp.sum() <= 0:
+        return np.zeros((0, 3))
+    keuze = rng.choice(len(tri), size=n, p=opp / opp.sum())
+    a, b = rng.random(n), rng.random(n)
+    spiegel = a + b > 1
+    a[spiegel], b[spiegel] = 1 - a[spiegel], 1 - b[spiegel]
+    t = tri[keuze]
+    return t[:, 0] + a[:, None] * (t[:, 1] - t[:, 0]) + b[:, None] * (t[:, 2] - t[:, 0])
+
+
+class _Afstand:
+    """Houdt bij waar al iets staat, zodat figuren niet in elkaar komen."""
+
+    def __init__(self, minimum):
+        self.minimum, self.cellen = minimum, {}
+
+    def vrij(self, x, y):
+        cx, cy = int(x // self.minimum), int(y // self.minimum)
+        for a in (-1, 0, 1):
+            for b in (-1, 0, 1):
+                for px, py in self.cellen.get((cx + a, cy + b), ()):
+                    if math.hypot(x - px, y - py) < self.minimum:
+                        return False
+        return True
+
+    def zet(self, x, y):
+        self.cellen.setdefault((int(x // self.minimum), int(y // self.minimum)), []).append((x, y))
+
+
+def _rijrichting(x, y, punten):
+    """Richting van de weg bij (x, y): de lange as van de wegpunten in de buurt."""
+    import numpy as np
+
+    d = np.hypot(punten[:, 0] - x, punten[:, 1] - y)
+    dichtbij = punten[d < 15.0][:, :2]
+    if len(dichtbij) < 3:
+        return 0.0
+    eigen = np.linalg.eigh(np.cov((dichtbij - dichtbij.mean(0)).T))[1][:, -1]
+    return math.atan2(eigen[1], eigen[0])
+
+
+def aankleden(objecten, schapen_per_ha=8.0, autos_per_100m=1.0, mensen_per_100m=1.5, variatie=1):
+    """Zet schapen op gras en auto's en mensen op asfalt, op de geselecteerde surfaces.
+
+    Een vorige aankleding wordt vervangen. Geeft {naam: aantal} terug.
+    """
+    import numpy as np
+    import random
+
+    rng, rnd = np.random.default_rng(variatie), random.Random(variatie)
+    for naam in AANKLEDING:  # vorige versie weghalen, zodat opnieuw uitvoeren vervangt
+        oud = bpy.data.objects.get(naam)
+        if oud is not None:
+            data = oud.data
+            bpy.data.objects.remove(oud)
+            if data is not None and data.users == 0:
+                bpy.data.meshes.remove(data)
+    col = bpy.data.collections.get("Aankleding")
+    if col is None:
+        col = bpy.data.collections.new("Aankleding")
+        bpy.context.scene.collection.children.link(col)
+
+    per_soort = {}
+    for obj in objecten:
+        if obj.type == "MESH":
+            per_soort.setdefault(soort_van(obj), []).append(obj)
+    gras = [o for s, lijst in per_soort.items() if s in GRAS_SOORTEN for o in lijst]
+    weg = [o for s, lijst in per_soort.items() if s in WEG_SOORTEN for o in lijst]
+    looppad = [o for s, lijst in per_soort.items() if s in LOOP_SOORTEN for o in lijst]
+    doelen = [o for o in bpy.context.scene.objects if o.type == "MESH" and o.visible_get()
+              and o.name not in AANKLEDING and not o.name.startswith(("Bomen", "Gebouwen"))]
+
+    def bovenop(punten, toegestaan):
+        """Per punt de hoogte waar een toegestaan object het bovenste oppervlak is, anders None."""
+        return [t[1] if t is not None and t[0] in toegestaan else None
+                for t in _bovenste_treffers([(p[0], p[1]) for p in punten], doelen)]
+
+    telling = {}
+
+    # Schapen: in kuddes van 5 tot 15 dieren, dicht bij elkaar op het gras.
+    exemplaren = []
+    tri, opp = _driehoeken(gras)
+    totaal = int(round(schapen_per_ha * opp.sum() / 10000.0))
+    afstand = _Afstand(1.4)
+    over = totaal
+    # Nieuwe kuddes maken tot het aantal gehaald is (een kudde kan deels naast het gras vallen).
+    kuddes = _willekeurige_punten(tri, opp, max(1, totaal), rng) if totaal else []
+    for mx, my, _ in kuddes:
+        if over <= 0:
+            break
+        grootte = min(over, rnd.randint(5, 15))
+        kandidaten = [(mx + rng.normal(0, 5), my + rng.normal(0, 5)) for _ in range(grootte * 8)]
+        for (x, y), z in zip(kandidaten, bovenop(kandidaten, gras)):
+            if grootte == 0:
+                break
+            if z is not None and afstand.vrij(x, y):
+                afstand.zet(x, y)
+                exemplaren.append((_schaap(rnd), x, y, z, rnd.uniform(0, 2 * math.pi), rnd.uniform(0.9, 1.1), {}))
+                grootte -= 1
+                over -= 1
+    punten, vlakken, materiaal = _voeg_samen(exemplaren)
+    wol = bpy.data.materials.get("Schaap wol")
+    if wol is None:
+        wol = bpy.data.materials.new("Schaap wol")
+        wol.diffuse_color = (0.68, 0.64, 0.56, 1.0)
+        if not wol.use_nodes:
+            wol.use_nodes = True
+        bouw_textuur(wol, {"type": "ruis", "c1": (0.60, 0.56, 0.48), "c2": (0.72, 0.68, 0.60),
+                           "donker": (0.45, 0.42, 0.36), "vlek": 0.5, "fijn": 25.0, "bump": 0.6}, 1.0)
+    _object_uit("Schapen", punten, vlakken, materiaal,
+                [wol, _effen_materiaal("Schaap kop en poten", (0.03, 0.028, 0.025), 0.8)], col, glad=True)
+    telling["schapen"] = len(exemplaren)
+
+    # Auto's: in de rijrichting, en alleen als de hele auto op het asfalt past.
+    exemplaren = []
+    tri, opp = _driehoeken(weg)
+    # Dichte steekproef over het wegoppervlak; de hoekpunten alleen liggen soms 100 m uit elkaar.
+    weg_punten = _willekeurige_punten(tri, opp, int(min(opp.sum() / 2.0, 200000)), rng)
+    doel = int(round(autos_per_100m * opp.sum() / 400.0))  # uitgaande van een weg van ca. 4 m breed
+    afstand = _Afstand(9.0)
+    autoplekken = _Afstand(3.5)  # mensen houden afstand van auto's
+    for x, y, _ in _willekeurige_punten(tri, opp, doel * 6, rng):
+        if len(exemplaren) >= doel:
+            break
+        if not afstand.vrij(x, y):
+            continue
+        hoek = _rijrichting(x, y, weg_punten) + (math.pi if rnd.random() < 0.5 else 0.0)
+        c, s = math.cos(hoek), math.sin(hoek)
+        hoeken = [(x + a * c - b * s, y + a * s + b * c) for a in (-2.2, 2.2) for b in (-0.9, 0.9)]
+        hoogtes = bovenop([(x, y)] + hoeken, weg)
+        if any(h is None for h in hoogtes):
+            continue
+        afstand.zet(x, y)
+        for a in (-1.4, 0.0, 1.4):  # een auto is lang: drie punten langs de lengte
+            autoplekken.zet(x + a * c, y + a * s)
+        lak = rnd.randrange(len(LAKKLEUREN))
+        exemplaren.append((_auto(rnd), x, y, min(hoogtes), hoek, 1.0, {0: 3 + lak}))
+    punten, vlakken, materiaal = _voeg_samen(exemplaren)
+    materialen = [_effen_materiaal("Auto lak 1", LAKKLEUREN[0], 0.3),
+                  _effen_materiaal("Auto ruiten", (0.01, 0.015, 0.02), 0.05),
+                  _effen_materiaal("Auto banden", (0.015, 0.015, 0.015), 0.9)]
+    materialen += [_effen_materiaal(f"Auto lak {i + 1}", k, 0.3) for i, k in enumerate(LAKKLEUREN)]
+    _object_uit("Auto's", punten, vlakken, materiaal, materialen, col)
+    telling["auto's"] = len(exemplaren)
+
+    # Mensen: wandelaars, soms met z'n tweeën.
+    exemplaren = []
+    tri, opp = _driehoeken(looppad)
+    doel = int(round(mensen_per_100m * opp.sum() / 400.0))
+    for x, y, _ in _willekeurige_punten(tri, opp, doel * 4, rng):
+        if len(exemplaren) >= doel:
+            break
+        groep = [(x, y)]
+        if rnd.random() < 0.4:
+            groep.append((x + rng.normal(0, 0.3) + 0.6, y + rng.normal(0, 0.3)))
+        hoogtes = bovenop(groep, looppad)
+        hoek = rnd.uniform(0, 2 * math.pi)
+        for (px, py), z in zip(groep, hoogtes):
+            if z is None or len(exemplaren) >= doel or not autoplekken.vrij(px, py):
+                continue
+            # Materiaal 0 (kleding) en 2 (huid) krijgen per persoon een eigen kleur.
+            extra = {0: 3 + rnd.randrange(len(KLEDING)), 2: 3 + len(KLEDING) + rnd.randrange(len(HUID))}
+            exemplaren.append((_mens(rnd), px, py, z, hoek + rnd.uniform(-0.3, 0.3), rnd.uniform(0.92, 1.06), extra))
+    punten, vlakken, materiaal = _voeg_samen(exemplaren)
+    materialen = [_effen_materiaal("Kleding 1", KLEDING[0], 0.9),
+                  _effen_materiaal("Broek", (0.03, 0.035, 0.06), 0.9),
+                  _effen_materiaal("Huid 1", HUID[0], 0.6)]
+    materialen += [_effen_materiaal(f"Kleding {i + 1}", k, 0.9) for i, k in enumerate(KLEDING)]
+    materialen += [_effen_materiaal(f"Huid {i + 1}", k, 0.6) for i, k in enumerate(HUID)]
+    _object_uit("Mensen", punten, vlakken, materiaal, materialen, col, glad=True)
+    telling["mensen"] = len(exemplaren)
+    return telling
+
+
+# ---------------------------------------------------------------------------
 # Add-on
 # ---------------------------------------------------------------------------
 
@@ -1527,6 +1865,36 @@ class OBJECT_OT_bomen_ahn(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class OBJECT_OT_aankleden(bpy.types.Operator):
+    """Zet schapen op het gras en auto's en mensen op het asfalt van de geselecteerde surfaces"""
+
+    bl_idname = "object.aankleden"
+    bl_label = "Aankleden (schapen, mensen, auto's)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    schapen: FloatProperty(name="Schapen per hectare gras", default=8.0, min=0.0, max=100.0)
+    autos: FloatProperty(name="Auto's per 100 m weg", default=1.0, min=0.0, max=20.0)
+    mensen: FloatProperty(name="Mensen per 100 m weg", default=1.5, min=0.0, max=50.0)
+    variatie: IntProperty(name="Variatie", description="Ander getal = andere verdeling", default=1, min=0)
+
+    @classmethod
+    def poll(cls, context):
+        return any(o.type == "MESH" for o in context.selected_objects)
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        objecten = [o for o in context.selected_objects if o.type == "MESH"]
+        telling = aankleden(objecten, self.schapen, self.autos, self.mensen, self.variatie)
+        if not any(telling.values()):
+            self.report({"WARNING"}, "Niets geplaatst: selecteer surfaces met gras of asfalt "
+                                     "(eerst Materialen op naam gebruiken)")
+            return {"CANCELLED"}
+        self.report({"INFO"}, ", ".join(f"{v} {k}" for k, v in telling.items()) + " geplaatst")
+        return {"FINISHED"}
+
+
 class OBJECT_OT_kleuren_op_naam(bpy.types.Operator):
     """Geef de geselecteerde surfaces een materiaal op basis van hun naam (gras, asfalt, zetsteen, ...)"""
 
@@ -1568,6 +1936,7 @@ def _menu_object(self, context):
     self.layout.operator(OBJECT_OT_luchtfoto_pdok.bl_idname, icon="IMAGE_DATA")
     self.layout.operator(OBJECT_OT_gebouwen_3dbag.bl_idname, icon="HOME")
     self.layout.operator(OBJECT_OT_bomen_ahn.bl_idname, icon="OUTLINER_OB_POINTCLOUD")
+    self.layout.operator(OBJECT_OT_aankleden.bl_idname, icon="COMMUNITY")
 
 
 def register():
@@ -1576,6 +1945,7 @@ def register():
     bpy.utils.register_class(OBJECT_OT_kleuren_op_naam)
     bpy.utils.register_class(OBJECT_OT_gebouwen_3dbag)
     bpy.utils.register_class(OBJECT_OT_bomen_ahn)
+    bpy.utils.register_class(OBJECT_OT_aankleden)
     bpy.types.TOPBAR_MT_file_import.append(_menu)
     bpy.types.VIEW3D_MT_object.append(_menu_object)
 
@@ -1583,6 +1953,7 @@ def register():
 def unregister():
     bpy.types.VIEW3D_MT_object.remove(_menu_object)
     bpy.types.TOPBAR_MT_file_import.remove(_menu)
+    bpy.utils.unregister_class(OBJECT_OT_aankleden)
     bpy.utils.unregister_class(OBJECT_OT_bomen_ahn)
     bpy.utils.unregister_class(OBJECT_OT_gebouwen_3dbag)
     bpy.utils.unregister_class(OBJECT_OT_kleuren_op_naam)

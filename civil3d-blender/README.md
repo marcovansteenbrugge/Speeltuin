@@ -123,6 +123,28 @@ Hoe het werkt: het AHN heeft een hoogtekaart van alles (DSM) en een van alleen h
 
 Bron: AHN via PDOK (CC0).
 
+## 7. Aankleden: schapen, mensen en auto's
+
+1. Selecteer de surfaces van je ontwerp. Toets **A** in het grote beeld selecteert alles.
+2. Kies **Object → Aankleden (schapen, mensen, auto's)**.
+3. Stel de aantallen in en klik **OK**.
+
+| Wat | Waar | Instelling |
+| --- | --- | --- |
+| **Schapen** | Op gras en beheerstroken, in kuddes van 5 tot 15 | Schapen per hectare gras (standaard 8) |
+| **Auto's** | Op asfalt, in de rijrichting, alleen waar de hele auto op de weg past | Auto's per 100 m weg (standaard 1) |
+| **Mensen** | Op asfalt en fietspaden, soms met z'n tweeën, nooit in een auto | Mensen per 100 m weg (standaard 1,5) |
+
+![Aangeklede testdijk: auto's en wandelaars op de kruin, schapen op de berm](voorbeeld/aankleden.png)
+
+![Schapen van dichtbij](voorbeeld/schapen.png) ![Wandelaars van dichtbij](voorbeeld/mensen.png)
+
+- Welke surface gras of asfalt is, haalt de add-on uit het materiaal (*Oppervlak gras*, *Oppervlak asfalt*). Gebruik dus eerst **Materialen op naam** als je surfaces die nog niet hebben.
+- Er komt alleen iets waar die surface het bovenste oppervlak is, en het staat er precies op.
+- **Opnieuw uitvoeren vervangt** de vorige aankleding. Niet tevreden met de verdeling? Voer het opnieuw uit met een ander getal bij **Variatie**.
+- De figuren zijn maquettestijl: eenvoudige vormen op de juiste maat (schaap ca. 1,2 m, mens ca. 1,75 m, auto ca. 4,3 m). Ze staan in de collectie *Aankleding*, in drie objecten: *Schapen*, *Mensen* en *Auto's*.
+- Kleur aanpassen kan via de materialen, bijvoorbeeld *Schaap wol*, *Auto lak 1–6* en *Kleding 1–6*.
+
 ## Opdrachtregel
 
 Zonder de Blender-interface, bijvoorbeeld voor een reeks bestanden of als Claude het aanstuurt:
