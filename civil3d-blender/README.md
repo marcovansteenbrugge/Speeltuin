@@ -141,7 +141,7 @@ Bron: AHN via PDOK (CC0).
 
 - Welke surface gras of asfalt is, haalt de add-on uit het materiaal (*Oppervlak gras*, *Oppervlak asfalt*). Gebruik dus eerst **Materialen op naam** als je surfaces die nog niet hebben.
 - Er komt alleen iets waar die surface het bovenste oppervlak is, en het staat er precies op.
-- **Opnieuw uitvoeren vervangt** de vorige aankleding. Niet tevreden met de verdeling? Voer het opnieuw uit met een ander getal bij **Variatie**.
+- **Opnieuw uitvoeren vervangt per soort.** Alleen wat je nu plaatst, wordt vervangen. Selecteer je alleen het gras, of zet je auto's op 0, dan blijven de bestaande auto's en mensen gewoon staan. Niet tevreden met de verdeling? Voer het opnieuw uit met een ander getal bij **Variatie**.
 - De figuren zijn maquettestijl: eenvoudige vormen op de juiste maat (schaap ca. 1,2 m, mens ca. 1,75 m, auto ca. 4,3 m). Ze staan in de collectie *Aankleding*, in drie objecten: *Schapen*, *Mensen* en *Auto's*.
 - Kleur aanpassen kan via de materialen, bijvoorbeeld *Schaap wol*, *Auto lak 1–6* en *Kleding 1–6*.
 

@@ -477,6 +477,23 @@ def test_aankleden():
     lx.aankleden(stroken, variatie=2)
     assert "Schapen.001" not in bpy.data.objects and bpy.data.objects["Schapen"].users_collection
 
+    # Alleen het gras geselecteerd, of auto's op 0: de auto's en mensen blijven staan.
+    auto_punten = len(bpy.data.objects["Auto's"].data.vertices)
+    mensen_punten = len(bpy.data.objects["Mensen"].data.vertices)
+    telling = lx.aankleden([stroken[0], stroken[2]], schapen_per_ha=20, variatie=3)
+    assert set(telling) == {"schapen"}, telling
+    assert len(bpy.data.objects["Auto's"].data.vertices) == auto_punten
+    assert len(bpy.data.objects["Mensen"].data.vertices) == mensen_punten
+    telling = lx.aankleden(stroken, schapen_per_ha=20, autos_per_100m=0, mensen_per_100m=0, variatie=4)
+    assert set(telling) == {"schapen"} and len(bpy.data.objects["Auto's"].data.vertices) == auto_punten
+
+    # Nieuwe mensen komen niet in bestaande auto's te staan.
+    lx.aankleden(stroken, schapen_per_ha=0, autos_per_100m=0, mensen_per_100m=20, variatie=5)
+    autos = np.array([v.co[:] for v in bpy.data.objects["Auto's"].data.vertices])
+    mensen = np.array([v.co[:] for v in bpy.data.objects["Mensen"].data.vertices])
+    afstand = np.min(np.hypot(mensen[:, None, 0] - autos[None, ::5, 0], mensen[:, None, 1] - autos[None, ::5, 1]))
+    assert afstand > 0.5, afstand
+
 
 def test_pdok_en_3dbag_echt():
     """Echte AHN- en 3D BAG-gegevens rond het RD-nulpunt in Amersfoort; overgeslagen zonder internet."""

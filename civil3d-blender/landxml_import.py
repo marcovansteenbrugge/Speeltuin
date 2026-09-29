@@ -1594,19 +1594,23 @@ def _rijrichting(x, y, punten):
 def aankleden(objecten, schapen_per_ha=8.0, autos_per_100m=1.0, mensen_per_100m=1.5, variatie=1):
     """Zet schapen op gras en auto's en mensen op asfalt, op de geselecteerde surfaces.
 
-    Een vorige aankleding wordt vervangen. Geeft {naam: aantal} terug.
+    Alleen een soort die nu geplaatst wordt, vervangt de vorige versie van die soort.
+    Een soort met aantal 0, of zonder passende surface in de selectie, blijft zoals hij
+    was; zo verdwijnen de auto's niet als je alleen het gras selecteert voor schapen.
+    Geeft {naam: aantal} terug voor de soorten die geplaatst zijn.
     """
     import numpy as np
     import random
 
-    rng, rnd = np.random.default_rng(variatie), random.Random(variatie)
-    for naam in AANKLEDING:  # vorige versie weghalen, zodat opnieuw uitvoeren vervangt
+    def vervang(naam):
         oud = bpy.data.objects.get(naam)
         if oud is not None:
             data = oud.data
             bpy.data.objects.remove(oud)
             if data is not None and data.users == 0:
                 bpy.data.meshes.remove(data)
+
+    rng, rnd = np.random.default_rng(variatie), random.Random(variatie)
     col = bpy.data.collections.get("Aankleding")
     if col is None:
         col = bpy.data.collections.new("Aankleding")
@@ -1628,8 +1632,27 @@ def aankleden(objecten, schapen_per_ha=8.0, autos_per_100m=1.0, mensen_per_100m=
                 for t in _bovenste_treffers([(p[0], p[1]) for p in punten], doelen)]
 
     telling = {}
+    autoplekken = _Afstand(3.5)  # mensen houden afstand van auto's
 
     # Schapen: in kuddes van 5 tot 15 dieren, dicht bij elkaar op het gras.
+    if schapen_per_ha > 0 and gras:
+        telling["schapen"] = _plaats_schapen(gras, schapen_per_ha, bovenop, rng, rnd, col, vervang)
+
+    # Auto's: in de rijrichting, en alleen als de hele auto op het asfalt past.
+    if autos_per_100m > 0 and weg:
+        telling["auto's"] = _plaats_autos(weg, autos_per_100m, bovenop, autoplekken, rng, rnd, col, vervang)
+    elif "Auto's" in bpy.data.objects:
+        # Bestaande auto's blijven staan; mensen moeten er ook dan niet in komen te staan.
+        for x, y, _ in _wereld_punten(bpy.data.objects["Auto's"])[::10]:
+            autoplekken.zet(x, y)
+
+    # Mensen: wandelaars, soms met z'n tweeën.
+    if mensen_per_100m > 0 and looppad:
+        telling["mensen"] = _plaats_mensen(looppad, mensen_per_100m, bovenop, autoplekken, rng, rnd, col, vervang)
+    return telling
+
+
+def _plaats_schapen(gras, schapen_per_ha, bovenop, rng, rnd, col, vervang):
     exemplaren = []
     tri, opp = _driehoeken(gras)
     totaal = int(round(schapen_per_ha * opp.sum() / 10000.0))
@@ -1659,18 +1682,19 @@ def aankleden(objecten, schapen_per_ha=8.0, autos_per_100m=1.0, mensen_per_100m=
             wol.use_nodes = True
         bouw_textuur(wol, {"type": "ruis", "c1": (0.60, 0.56, 0.48), "c2": (0.72, 0.68, 0.60),
                            "donker": (0.45, 0.42, 0.36), "vlek": 0.5, "fijn": 25.0, "bump": 0.6}, 1.0)
+    vervang("Schapen")
     _object_uit("Schapen", punten, vlakken, materiaal,
                 [wol, _effen_materiaal("Schaap kop en poten", (0.03, 0.028, 0.025), 0.8)], col, glad=True)
-    telling["schapen"] = len(exemplaren)
+    return len(exemplaren)
 
-    # Auto's: in de rijrichting, en alleen als de hele auto op het asfalt past.
+
+def _plaats_autos(weg, autos_per_100m, bovenop, autoplekken, rng, rnd, col, vervang):
     exemplaren = []
     tri, opp = _driehoeken(weg)
     # Dichte steekproef over het wegoppervlak; de hoekpunten alleen liggen soms 100 m uit elkaar.
     weg_punten = _willekeurige_punten(tri, opp, int(min(opp.sum() / 2.0, 200000)), rng)
     doel = int(round(autos_per_100m * opp.sum() / 400.0))  # uitgaande van een weg van ca. 4 m breed
     afstand = _Afstand(9.0)
-    autoplekken = _Afstand(3.5)  # mensen houden afstand van auto's
     for x, y, _ in _willekeurige_punten(tri, opp, doel * 6, rng):
         if len(exemplaren) >= doel:
             break
@@ -1692,10 +1716,12 @@ def aankleden(objecten, schapen_per_ha=8.0, autos_per_100m=1.0, mensen_per_100m=
                   _effen_materiaal("Auto ruiten", (0.01, 0.015, 0.02), 0.05),
                   _effen_materiaal("Auto banden", (0.015, 0.015, 0.015), 0.9)]
     materialen += [_effen_materiaal(f"Auto lak {i + 1}", k, 0.3) for i, k in enumerate(LAKKLEUREN)]
+    vervang("Auto's")
     _object_uit("Auto's", punten, vlakken, materiaal, materialen, col)
-    telling["auto's"] = len(exemplaren)
+    return len(exemplaren)
 
-    # Mensen: wandelaars, soms met z'n tweeën.
+
+def _plaats_mensen(looppad, mensen_per_100m, bovenop, autoplekken, rng, rnd, col, vervang):
     exemplaren = []
     tri, opp = _driehoeken(looppad)
     doel = int(round(mensen_per_100m * opp.sum() / 400.0))
@@ -1719,9 +1745,9 @@ def aankleden(objecten, schapen_per_ha=8.0, autos_per_100m=1.0, mensen_per_100m=
                   _effen_materiaal("Huid 1", HUID[0], 0.6)]
     materialen += [_effen_materiaal(f"Kleding {i + 1}", k, 0.9) for i, k in enumerate(KLEDING)]
     materialen += [_effen_materiaal(f"Huid {i + 1}", k, 0.6) for i, k in enumerate(HUID)]
+    vervang("Mensen")
     _object_uit("Mensen", punten, vlakken, materiaal, materialen, col, glad=True)
-    telling["mensen"] = len(exemplaren)
-    return telling
+    return len(exemplaren)
 
 
 # ---------------------------------------------------------------------------
