@@ -4,6 +4,8 @@ Een gratis Blender-add-on die de **LandXML-export van Civil 3D** inleest en er d
 
 ![Voorbeeld: maaiveld, as met boog, riolering en band](voorbeeld/voorbeeld.png)
 
+**Stappenplan:** zie [WORKFLOW.md](WORKFLOW.md) voor de hele route van Civil 3D-ontwerp naar render, met een checklist en de meest voorkomende valkuilen.
+
 ## Wat wordt ingelezen
 
 | Civil 3D | In Blender |
