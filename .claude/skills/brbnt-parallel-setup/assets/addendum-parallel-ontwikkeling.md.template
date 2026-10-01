@@ -1,0 +1,50 @@
+# Addendum: parallel ontwikkelen (laag 5 van de methode)
+
+<!--
+  DOEL: dit los je op ZODRA je vaker dan één taak tegelijk laat lopen (jijzelf
+  met meerdere sessies, of meerdere mensen/agents op hetzelfde project). Zonder
+  dit addendum vertrappen sessies elkaars staging, poorten en dev-server.
+-->
+
+## Bij elke implementatietaak
+Vraag/bepaal expliciet: draait dit **direct op de hoofdbranch**, of in een
+**aparte worktree-branch**? Vuistregel: als de taak > {{X}} uur duurt of parallel
+aan ander werk loopt, altijd een worktree.
+
+## Worktree-lifecycle
+1. Maak branch `worktree-<naam>`.
+2. Claim een poort-slot uit de registry (zie hieronder); nooit een poort hergebruiken
+   die een andere lopende worktree al claimt.
+3. Zet omgevingsvariabelen die van het slotnummer afhangen (bijv. API-URL, DB-naam).
+4. Werk, build, test.
+5. Bij groene build + tests + conflictvrije merge: automatisch mergen naar de
+   hoofdbranch en pushen. Bij conflicten: niet automatisch oplossen, mens erbij halen.
+6. `git worktree remove` en poort-slot vrijgeven.
+
+## Poort-registry
+<!--
+  Vul dit alleen in als parallelle worktrees hier daadwerkelijk gelijktijdig
+  losse lokale poorten claimen. Is dat niet het geval (geen dev-server, of één
+  gecombineerd proces zoals bij @cloudflare/vite-plugin), markeer dat dan
+  expliciet ("n.v.t. voor dit project") in plaats van een tabel te verzinnen.
+  Houd dit bestand (bijv. .claude/worktrees/ports.json of vergelijkbaar) als
+  bron van waarheid; niet in het hoofd onthouden welke slots bezet zijn.
+-->
+```json
+{
+  "{{worktree-naam}}": {{slotnummer}}
+}
+```
+
+| Component | Poortformule | Voorbeeld (slot 1) |
+|---|---|---|
+| {{Frontend dev-server}} | {{basis}} + N, of "geen eigen poort" als gecombineerd met backend | {{...}} |
+| {{Backend API}} | {{basis}} + N, of "geen eigen poort" als gecombineerd met frontend | {{...}} |
+| {{Gedeelde services, remote (db/mail/storage/etc.)}} | vast, NIET per worktree starten | {{...}} |
+| {{Gedeelde services, lokale state (bijv. lokale DB-migraties)}} | {{per worktree, of gedeeld — expliciet uitvragen, niet aannemen}} | {{...}} |
+
+## Frictie wegnemen (permissies)
+Zet veelgebruikte, ongevaarlijke commando's (build, test, lint, git status/diff/log)
+op een allowlist in de tool-settings, zodat niet elke sessie opnieuw om toestemming
+vraagt. Destructieve commando's (force-push, reset --hard, migraties verwijderen)
+NOOIT op de allowlist; die blijven altijd een expliciete bevestiging vereisen.
